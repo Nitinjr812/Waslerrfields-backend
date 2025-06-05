@@ -2,17 +2,16 @@ import mongoose from 'mongoose';
 
 const connectDB = async () => {
     try {
-        const conn = await mongoose.connect(process.env.MONGO_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-            // Additional options:
-            retryWrites: true,
-            w: 'majority'
-        });
-        console.log(`MongoDB Connected: ${conn.connection.host}`);
-        console.log(`Database Name: ${conn.connection.name}`);
+        const conn = await mongoose.connect(
+            'mongodb+srv://nitin:Oio3pg0yQy4UQR8W@cluster0.lgmyvk0.mongodb.net/Waslerrfields?retryWrites=true&w=majority',
+            {
+                useNewUrlParser: true,
+                useUnifiedTopology: true,
+            }
+        );
+        console.log(`MongoDB Connected to database: ${conn.connection.name}`);
     } catch (error) {
-        console.error(`Error: ${error.message}`);
+        console.error(`Connection error: ${error.message}`);
         process.exit(1);
     }
 };
