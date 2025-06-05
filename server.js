@@ -505,8 +505,7 @@ app.post('/api/auth/logout', authenticateToken, (req, res) => {
 });
 
 
-
-// Global error handler
+ 
 app.use((error, req, res, next) => {
     console.error('Global error handler:', error);
     res.status(500).json({
