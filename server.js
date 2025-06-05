@@ -504,13 +504,7 @@ app.post('/api/auth/logout', authenticateToken, (req, res) => {
     });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
-    res.status(404).json({
-        success: false,
-        message: 'Route not found'
-    });
-});
+
 
 // Global error handler
 app.use((error, req, res, next) => {
