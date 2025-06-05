@@ -1,35 +1,41 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import cors from 'cors';
-import connectDB from './config/db.js';
-import authRoutes from './routes/authRoutes.js';
-import { notFound, errorHandler } from './utils/errorHandler.js';
+const express = require('express');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const cors = require('cors');
+const connectDB = require('./config/db');
 
-dotenv.config();
-
-const app = express();
+// Load env vars
+dotenv.config({ path: './config/config.env' });
 
 // Connect to database
 connectDB();
 
-// Middleware
-app.use(cors());
+// Route files
+const auth = require('./routes/auth');
+
+const app = express();
+
+// Body parser
 app.use(express.json());
 
-// Routes
-app.use('/api/auth', authRoutes);
+// Enable CORS
+app.use(cors());
 
-// Test route for Vercel
-app.get('/', (req, res) => {
-  res.json({ message: 'Auth API is running...' });
-});
-
-// Error handling
-app.use(notFound);
-app.use(errorHandler);
+// Mount routers
+app.use('/api/auth', auth);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+const server = app.listen(
+  PORT,
+  console.log(
+    `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
+  )
+);
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err, promise) => {
+  console.log(`Error: ${err.message}`);
+  // Close server & exit process
+  server.close(() => process.exit(1));
 });
