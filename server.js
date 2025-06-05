@@ -533,11 +533,11 @@ process.on('SIGINT', async () => {
     await mongoose.connection.close();
     process.exit(0);
 });
-
 app.get("/", (req, res) => {
     res.json({
         status: true
-    })
-})
+    });
+});
+
 
 module.exports = app;
