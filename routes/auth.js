@@ -4,7 +4,7 @@ const { check, validationResult } = require('express-validator');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { adminProtect } = require('../middlewares/auth');
+const { protect } = require('../middlewares/auth');
 
 // @route    POST api/auth/register
 // @desc     Register user
@@ -209,7 +209,7 @@ router.post(
 // @route    GET api/auth/me
 // @desc     Get current user
 // @access   Private
-router.get('/me', adminProtect, async (req, res, next) => {
+router.get('/me', protect, async (req, res, next) => {
     try {
         const user = await User.findById(req.user.id).select('-password');
         res.status(200).json({
