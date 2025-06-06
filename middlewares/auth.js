@@ -2,8 +2,8 @@ const jwt = require('jsonwebtoken');
 const ErrorResponse = require('../utils/errorResponse');
 const User = require('../models/User');
 
-// Middleware to protect routes
-exports.protect = async (req, res, next) => {
+// Simple admin token verification (for your current frontend)
+exports.adminProtect = async (req, res, next) => {
   let token;
 
   // Get token from header
@@ -23,11 +23,15 @@ exports.protect = async (req, res, next) => {
     });
   }
 
+  // For your simple frontend token
+  if (token.startsWith('admin-token-')) {
+    req.user = { role: 'admin' }; // Mock admin user
+    return next();
+  }
+
+  // For JWT tokens (recommended for production)
   try {
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Fixed: Use decoded.user.id instead of decoded.id (matches your JWT payload structure)
     req.user = await User.findById(decoded.user.id);
     
     if (!req.user) {
@@ -47,7 +51,6 @@ exports.protect = async (req, res, next) => {
   }
 };
 
-// Middleware to authorize roles
 exports.authorize = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
