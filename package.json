@@ -18,7 +18,7 @@
     "jwt",
     "api"
   ],
-  "author": "Your Name",
+  "author": "Nitin",
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^2.4.3",

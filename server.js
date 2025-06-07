@@ -1,61 +1,53 @@
+// Add this to your main app.js or server.js file
+
 const express = require('express');
-const mongoose = require('mongoose');
-const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
-const connectDB = require('./config/db');
+const fs = require('fs');
 
-// Load env vars
-dotenv.config();
+const app = express(); 
 
-// Connect to database
-connectDB();
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+const audioDir = path.join(uploadsDir, 'audio');
 
-// Route files
-const auth = require('./routes/auth');
-const music = require('./routes/music'); // Add this line
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+if (!fs.existsSync(audioDir)) {
+  fs.mkdirSync(audioDir);
+}
 
-const app = express();
-
-// Body parser
+// Middleware
+app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Enable CORS
-app.use(cors({
-  origin: ['http://localhost:3000', 'https://your-frontend-domain.com'], // Add your frontend URLs
-  credentials: true
-}));
-
-// Serve static files (for uploaded music files)
+// Serve static files (for audio files)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Mount routers
-app.use('/api/auth', auth);
-app.use('/api/music', music); // Add this line
+// Routes
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/audio-items', require('./routes/audioitems'));
 
-const PORT = process.env.PORT || 5000;
-
-const server = app.listen(
-    PORT,
-    console.log(
-        `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
-    )
-);
-
-app.get("/", (req, res) => {
-    res.json({
-        status: true,
-        message: "Waslerr Backend API is running!",
-        endpoints: {
-            auth: "/api/auth",
-            music: "/api/music"
-        }
-    })
-})
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err, promise) => {
-    console.log(`Error: ${err.message}`);
-    // Close server & exit process
-    server.close(() => process.exit(1));
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: 'File too large. Maximum size is 10MB'
+      });
+    }
+  }
+  
+  res.status(500).json({
+    success: false,
+    message: 'Something went wrong!',
+    error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+  });
 });
+
+module.exports = app;
