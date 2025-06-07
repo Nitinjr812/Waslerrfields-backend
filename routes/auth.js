@@ -120,6 +120,49 @@ router.post(
 // @route    POST api/auth/login
 // @desc     Authenticate user
 // @access   Public
+// TEMPORARY ROUTE - REMOVE AFTER CREATING TEST USER
+// @route    POST api/auth/create-test-admin
+// @desc     Create test admin user (one-time)
+// @access   Public
+router.post('/create-test-admin', async (req, res) => {
+  try {
+    // Check if test user already exists
+    const existingUser = await User.findOne({ email: 'waslerr@example.com' });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'Test user already exists'
+      });
+    }
+
+    // Create test admin user
+    const user = new User({
+      name: 'waslerr',
+      email: 'waslerr@example.com',
+      password: '123456',
+      role: 'admin'
+    });
+
+    await user.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Test admin user created',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: 'Error creating test user'
+    });
+  }
+});
 router.post(
     '/login',
     [
