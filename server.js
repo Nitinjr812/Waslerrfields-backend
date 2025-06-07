@@ -28,7 +28,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/audio-items', require('./routes/audioitems'));
+app.use('/api/audio-items', require('./routes/audioItems'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

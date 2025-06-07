@@ -1,20 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { check, validationResult } = require('express-validator'); 
+const { check, validationResult } = require('express-validator');
+const AudioItem = require('../models/AudioItem');
 const { protect, authorize } = require('../middlewares/auth');
 const multer = require('multer');
-const path = require('path');
+const { uploadAudio, deleteAudio } = require('../config/cloudinary');
 
-// Configure multer for file upload
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/audio/');
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'audio-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// Configure multer for memory storage (Vercel compatible)
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   // Check if file is audio
@@ -157,14 +150,22 @@ router.post(
 
       const { title, description, price } = req.body;
 
+      // Upload audio to Cloudinary
+      console.log('Uploading audio to Cloudinary...');
+      const uploadResult = await uploadAudio(req.file.buffer, req.file.originalname);
+      
+      console.log('Cloudinary upload result:', uploadResult);
+
       // Create audio item
       const audioItem = new AudioItem({
         title: title.trim(),
         description: description.trim(),
         price: parseFloat(price),
-        audioUrl: `/uploads/audio/${req.file.filename}`,
+        audioUrl: uploadResult.secure_url,
+        audioPublicId: uploadResult.public_id,
         fileSize: req.file.size,
         mimeType: req.file.mimetype,
+        duration: uploadResult.duration || null,
         createdBy: req.user.id
       });
 
@@ -182,7 +183,8 @@ router.post(
       console.error('Create audio item error:', err);
       res.status(500).json({
         success: false,
-        message: 'Server error creating audio item'
+        message: 'Server error creating audio item',
+        error: err.message
       });
     }
   }
@@ -235,9 +237,26 @@ router.put(
 
       // If new audio file is uploaded
       if (req.file) {
-        updateData.audioUrl = `/uploads/audio/${req.file.filename}`;
+        console.log('Uploading new audio to Cloudinary...');
+        
+        // Upload new audio
+        const uploadResult = await uploadAudio(req.file.buffer, req.file.originalname);
+        
+        // Delete old audio from Cloudinary
+        if (audioItem.audioPublicId) {
+          try {
+            await deleteAudio(audioItem.audioPublicId);
+            console.log('Old audio deleted from Cloudinary');
+          } catch (deleteError) {
+            console.error('Error deleting old audio:', deleteError);
+          }
+        }
+
+        updateData.audioUrl = uploadResult.secure_url;
+        updateData.audioPublicId = uploadResult.public_id;
         updateData.fileSize = req.file.size;
         updateData.mimeType = req.file.mimetype;
+        updateData.duration = uploadResult.duration || null;
       }
 
       audioItem = await AudioItem.findByIdAndUpdate(
@@ -261,7 +280,8 @@ router.put(
       }
       res.status(500).json({
         success: false,
-        message: 'Server error updating audio item'
+        message: 'Server error updating audio item',
+        error: err.message
       });
     }
   }
@@ -279,6 +299,16 @@ router.delete('/:id', protect, authorize('admin'), async (req, res) => {
         success: false,
         message: 'Audio item not found'
       });
+    }
+
+    // Delete audio from Cloudinary
+    if (audioItem.audioPublicId) {
+      try {
+        await deleteAudio(audioItem.audioPublicId);
+        console.log('Audio deleted from Cloudinary');
+      } catch (deleteError) {
+        console.error('Error deleting audio from Cloudinary:', deleteError);
+      }
     }
 
     await AudioItem.findByIdAndDelete(req.params.id);

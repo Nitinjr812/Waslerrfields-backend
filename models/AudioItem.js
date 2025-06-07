@@ -23,8 +23,8 @@ const AudioItemSchema = new mongoose.Schema({
     required: [true, 'Audio file is required']
   },
   audioPublicId: {
-    type: String, // For Cloudinary public ID (if using Cloudinary)
-    required: false
+    type: String,
+    required: [true, 'Audio public ID is required'] // Cloudinary public ID for deletion
   },
   duration: {
     type: Number, // Audio duration in seconds
@@ -48,7 +48,7 @@ const AudioItemSchema = new mongoose.Schema({
     default: true
   }
 }, {
-  timestamps: true // This adds createdAt and updatedAt automatically
+  timestamps: true
 });
 
 // Index for better query performance
