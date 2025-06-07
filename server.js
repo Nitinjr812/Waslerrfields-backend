@@ -24,8 +24,15 @@ app.use(express.json());
 app.use(fileupload());
 
 // Enable CORS
-app.use(cors());
+// Enable CORS with specific options
+app.use(cors({
+    origin: 'http://localhost:5173', // or use process.env.FRONTEND_URL
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true
+}));
 
+// Handle preflight requests
+app.options('*', cors());
 // Mount routers
 app.use('/api/auth', auth);
 app.use('/api/music', music);
