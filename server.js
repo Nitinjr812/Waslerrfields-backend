@@ -21,7 +21,7 @@ const app = express();
 // CORS configuration - This is the key fix
 const corsOptions = {
     origin: [
-        'http://localhost:5173',
+        'http://localhost:5173/admindash',
         'http://localhost:3000',
         'https://your-frontend-domain.vercel.app', // Replace with your actual frontend URL
         'https://your-frontend-domain.netlify.app'  // Add other frontend domains as needed
