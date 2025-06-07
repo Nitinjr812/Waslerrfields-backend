@@ -1,53 +1,53 @@
-// Add this to your main app.js or server.js file
-
 const express = require('express');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
+const connectDB = require('./config/db');
+const fileupload = require('express-fileupload');
 
-const app = express(); 
+// Load env vars
+dotenv.config();
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, 'uploads');
-const audioDir = path.join(uploadsDir, 'audio');
+// Connect to database
+connectDB();
 
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-if (!fs.existsSync(audioDir)) {
-  fs.mkdirSync(audioDir);
-}
+// Route files
+const auth = require('./routes/auth');
+const music = require('./routes/music');
 
-// Middleware
-app.use(cors());
+const app = express();
+
+// Body parser
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Serve static files (for audio files)
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// File uploading
+app.use(fileupload());
 
-// Routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/audio-items', require('./routes/audioItems'));
+// Enable CORS
+app.use(cors());
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  
-  if (err instanceof multer.MulterError) {
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        message: 'File too large. Maximum size is 10MB'
-      });
-    }
-  }
-  
-  res.status(500).json({
-    success: false,
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-  });
+// Mount routers
+app.use('/api/auth', auth);
+app.use('/api/music', music);
+
+const PORT = process.env.PORT || 5000;
+
+const server = app.listen(
+    PORT,
+    console.log(
+        `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
+    )
+);
+
+app.get("/", (req, res) => {
+    res.json({
+        status: true
+    })
 });
 
-module.exports = app;
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err, promise) => {
+    console.log(`Error: ${err.message}`);
+    // Close server & exit process
+    server.close(() => process.exit(1));
+});
