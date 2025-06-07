@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
+const path = require('path');
 const connectDB = require('./config/db');
 
 // Load env vars
@@ -12,6 +13,7 @@ connectDB();
 
 // Route files
 const auth = require('./routes/auth');
+const music = require('./routes/music'); // Add this line
 
 const app = express();
 
@@ -19,10 +21,17 @@ const app = express();
 app.use(express.json());
 
 // Enable CORS
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://your-frontend-domain.com'], // Add your frontend URLs
+  credentials: true
+}));
+
+// Serve static files (for uploaded music files)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Mount routers
 app.use('/api/auth', auth);
+app.use('/api/music', music); // Add this line
 
 const PORT = process.env.PORT || 5000;
 
@@ -32,9 +41,15 @@ const server = app.listen(
         `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
     )
 );
+
 app.get("/", (req, res) => {
     res.json({
-        status: true
+        status: true,
+        message: "Waslerr Backend API is running!",
+        endpoints: {
+            auth: "/api/auth",
+            music: "/api/music"
+        }
     })
 })
 
