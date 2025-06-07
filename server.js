@@ -58,12 +58,11 @@ process.on('unhandledRejection', (err, promise) => {
 });
 
 // Alternative music routes using multer
-// routes/music.js - Updated version with multer
-const express = require('express');
-const router = express.Router();
-const multer = require('multer');
-const { protect } = require('../middlewares/auth');
-const Music = require('../models/Music');
+// routes/music.js - Updated version with multer 
+const router = express.Router(); 
+
+const { protect } = require('./middlewares/auth');
+const Music = require('./models/Music');
 const cloudinary = require('cloudinary').v2;
 
 // Configure Cloudinary
