@@ -1,9 +1,10 @@
-// server.js - Fixed for Vercel deployment with proper CORS
 const express = require('express');
 const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
-const fileUpload = require('express-fileupload');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const connectDB = require('./config/db');
 
 // Load env vars
@@ -12,107 +13,150 @@ dotenv.config();
 // Connect to database
 connectDB();
 
-// Route files
-const auth = require('./routes/auth');
-const music = require('./routes/music');
+// Cloudinary Config
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dozvqr0vm',
+    api_key: process.env.CLOUDINARY_API_KEY || '527578319683918',
+    api_secret: process.env.CLOUDINARY_API_SECRET || 'QGukNmPAwh-pLHfswyGy8pwKw7A'
+});
+
+// Audio Upload Setup
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'music_uploads',
+        resource_type: 'auto',
+        allowed_formats: ['mp3', 'wav']
+    }
+});
+
+const upload = multer({ storage });
+
+// Music Model
+const Music = mongoose.model('Music', new mongoose.Schema({
+    title: String,
+    description: String,
+    price: Number,
+    audioUrl: String,
+    cloudinaryId: String,
+    createdAt: { type: Date, default: Date.now }
+}));
 
 const app = express();
 
-// CORS configuration - This is the key fix
-const corsOptions = {
-    origin: [
-        'http://localhost:5173/admindash',
-        'http://localhost:3000',
-        'https://your-frontend-domain.vercel.app', // Replace with your actual frontend URL
-        'https://your-frontend-domain.netlify.app'  // Add other frontend domains as needed
-    ],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'X-Requested-With',
-        'Accept',
-        'Origin'
-    ],
-    credentials: true,
-    optionsSuccessStatus: 200
-};
-
-// Apply CORS middleware BEFORE other middleware
-app.use(cors(corsOptions));
-
-// Handle preflight requests explicitly
-app.options('*', cors(corsOptions));
-
 // Body parser
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json());
 
-// File upload middleware - Configure for Vercel
-app.use(fileUpload({
-    createParentPath: true,
-    limits: { 
-        fileSize: 10 * 1024 * 1024 // 10MB max file size
-    },
-    abortOnLimit: true,
-    responseOnLimit: "File size limit has been reached",
-    useTempFiles: false, // Important for Vercel - use memory instead of temp files
-    tempFileDir: undefined
-}));
+// Enable CORS
+app.use(cors());
 
-// Test route
-app.get("/", (req, res) => {
-    res.json({
-        status: true,
-        message: "Server is running",
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Add a test CORS route
-app.get("/api/test", (req, res) => {
-    res.json({
-        success: true,
-        message: "CORS is working",
-        origin: req.headers.origin
-    });
-});
+// Route files
+const auth = require('./routes/auth');
 
 // Mount routers
 app.use('/api/auth', auth);
-app.use('/api/music', music);
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error('Error:', err);
-    res.status(500).json({
-        success: false,
-        message: 'Something went wrong!',
-        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-    });
+// Music Routes
+app.get('/api/test', (req, res) => {
+    res.json({ message: "API Working!" });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
-    res.status(404).json({
-        success: false,
-        message: 'Route not found'
-    });
+app.post('/api/music', upload.single('audio'), async (req, res) => {
+    try {
+        const { title, description, price } = req.body;
+        const newMusic = new Music({
+            title,
+            description,
+            price,
+            audioUrl: req.file.path,
+            cloudinaryId: req.file.filename
+        });
+        await newMusic.save();
+        res.status(201).json(newMusic);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/music', async (req, res) => {
+    try {
+        const music = await Music.find();
+        res.json(music);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Update Music
+app.put('/api/music/:id', upload.single('audio'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { title, description, price } = req.body;
+
+        const music = await Music.findById(id);
+        if (!music) {
+            return res.status(404).json({ error: 'Music not found' });
+        }
+
+        // Update fields
+        music.title = title || music.title;
+        music.description = description || music.description;
+        music.price = price || music.price;
+
+        // If new audio is uploaded
+        if (req.file) {
+            // Delete old audio from Cloudinary (optional)
+            await cloudinary.uploader.destroy(music.cloudinaryId);
+
+            // Update with new audio
+            music.audioUrl = req.file.path;
+            music.cloudinaryId = req.file.filename;
+        }
+
+        await music.save();
+        res.json({ message: 'Music updated successfully', music });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Delete Music
+app.delete('/api/music/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const music = await Music.findByIdAndDelete(id);
+
+        if (!music) {
+            return res.status(404).json({ error: 'Music not found' });
+        }
+
+        await cloudinary.uploader.destroy(music.cloudinaryId);
+
+        res.json({ message: 'Music deleted successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Root route
+app.get("/", (req, res) => {
+    res.json({
+        status: true
+    })
 });
 
 const PORT = process.env.PORT || 5000;
 
-// For Vercel, we need to export the app
-if (process.env.NODE_ENV !== 'production') {
-    const server = app.listen(PORT, () => {
-        console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
-    });
+const server = app.listen(
+    PORT,
+    console.log(
+        `Server running in ${process.env.NODE_ENV} mode on port ${PORT}`
+    )
+);
 
-    // Handle unhandled promise rejections
-    process.on('unhandledRejection', (err, promise) => {
-        console.log(`Error: ${err.message}`);
-        server.close(() => process.exit(1));
-    });
-}
-
-module.exports = app;
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err, promise) => {
+    console.log(`Error: ${err.message}`);
+    // Close server & exit process
+    server.close(() => process.exit(1));
+});
