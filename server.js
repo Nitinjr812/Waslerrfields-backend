@@ -12,8 +12,8 @@ const { check, validationResult } = require('express-validator');
 // Initialize app
 const app = express();
 
-// Enhanced CORS configuration for large file uploads
-app.use(cors({
+// SIMPLIFIED CORS - Remove duplicate middleware
+const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
@@ -28,6 +28,7 @@ app.use(cors({
     // For development, allow all origins
     callback(null, true);
   },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type', 
@@ -38,48 +39,23 @@ app.use(cors({
     'Origin',
     'Accept',
     'X-Requested-With'
-  ],
-  credentials: true,
-  preflightContinue: false,
-  optionsSuccessStatus: 200,
-  maxAge: 86400 // 24 hours
-}));
+  ]
+};
 
-// Increase payload limits for large files
+app.use(cors(corsOptions));
+
+// Increase payload limits for large files - BEFORE other middleware
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true, parameterLimit: 50000 }));
 
-// Set timeout for requests
-app.use((req, res, next) => {
-  req.setTimeout(300000); // 5 minutes
-  res.setTimeout(300000); // 5 minutes
-  next();
-});
-
-// Enhanced CORS headers middleware - MUST be before routes
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Origin, Accept, X-Requested-With');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400');
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-// Cloudinary Config with optimized settings
+// Cloudinary Config
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// MongoDB Connection with optimized settings
+// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
     maxPoolSize: 10,
     serverSelectionTimeoutMS: 5000,
@@ -114,13 +90,14 @@ const musicSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Music = mongoose.model('Music', musicSchema);
 
-// Enhanced Audio Upload Setup
+// Enhanced Audio Upload Setup with chunked upload
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'music_uploads',
         resource_type: 'auto',
         allowed_formats: ['mp3', 'wav', 'mpeg'],
+        chunk_size: 6000000, // 6MB chunks for large files
         transformation: [
             { quality: 'auto' },
             { fetch_format: 'auto' }
@@ -137,7 +114,12 @@ const upload = multer({
         fields: 10
     },
     fileFilter: (req, file, cb) => {
-        console.log('File received:', file);
+        console.log('File received:', {
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            size: file.size
+        });
+        
         const allowedTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav'];
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
@@ -259,14 +241,17 @@ app.get('/api/auth/me', protect, async (req, res) => {
     }
 });
 
-// Enhanced Music Routes
+// FIXED Music Upload Route with better timeout handling
 app.post('/api/music', protect, (req, res) => {
     console.log('POST /api/music - Request received');
     console.log('Headers:', req.headers);
     
-    // Set longer timeout for this route
-    req.setTimeout(600000); // 10 minutes for large file uploads
-    res.setTimeout(600000);
+    // Extend timeout for this specific route
+    req.setTimeout(900000); // 15 minutes
+    res.setTimeout(900000); // 15 minutes
+    
+    // Add progress logging
+    let uploadStartTime = Date.now();
     
     upload.single('audio')(req, res, async (err) => {
         if (err) {
@@ -284,6 +269,7 @@ app.post('/api/music', protect, (req, res) => {
         }
 
         try {
+            console.log('Upload time so far:', (Date.now() - uploadStartTime) / 1000, 'seconds');
             console.log('Request body:', req.body);
             console.log('File info:', req.file ? {
                 originalname: req.file.originalname,
@@ -320,6 +306,7 @@ app.post('/api/music', protect, (req, res) => {
             await newMusic.save();
             
             console.log('Music saved successfully:', newMusic._id);
+            console.log('Total time:', (Date.now() - uploadStartTime) / 1000, 'seconds');
             
             res.status(201).json({
                 success: true,
@@ -350,8 +337,8 @@ app.get('/api/music', async (req, res) => {
 
 app.put('/api/music/:id', protect, (req, res) => {
     // Set longer timeout for updates with potential file uploads
-    req.setTimeout(600000);
-    res.setTimeout(600000);
+    req.setTimeout(900000);
+    res.setTimeout(900000);
     
     upload.single('audio')(req, res, async (err) => {
         if (err) {
@@ -492,4 +479,5 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log('CORS enabled for all origins');
     console.log('File upload limit: 100MB');
+    console.log('Upload timeout: 15 minutes');
 });
