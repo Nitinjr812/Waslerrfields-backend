@@ -14,32 +14,32 @@ const app = express();
 
 // SIMPLIFIED CORS - Remove duplicate middleware
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'https://your-production-frontend.com'
-    ];
-    
-    // For development, allow all origins
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'x-auth-token',
-    'Access-Control-Allow-Origin',
-    'Access-Control-Allow-Headers',
-    'Origin',
-    'Accept',
-    'X-Requested-With'
-  ]
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+            'http://localhost:5173',
+            'http://localhost:3000',
+            'http://127.0.0.1:5173',
+            'https://your-production-frontend.com'
+        ];
+
+        // For development, allow all origins
+        callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-auth-token',
+        'Access-Control-Allow-Origin',
+        'Access-Control-Allow-Headers',
+        'Origin',
+        'Accept',
+        'X-Requested-With'
+    ]
 };
 
 app.use(cors(corsOptions));
@@ -61,8 +61,8 @@ mongoose.connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
-.then(() => console.log('MongoDB Connected'))
-.catch(err => console.log('MongoDB Error:', err));
+    .then(() => console.log('MongoDB Connected'))
+    .catch(err => console.log('MongoDB Error:', err));
 
 // Models
 const userSchema = new mongoose.Schema({
@@ -72,7 +72,7 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: 'user' }
 }, { timestamps: true });
 
-userSchema.pre('save', async function(next) {
+userSchema.pre('save', async function (next) {
     if (!this.isModified('password')) return next();
     this.password = await bcrypt.hash(this.password, 12);
     next();
@@ -91,23 +91,35 @@ const User = mongoose.model('User', userSchema);
 const Music = mongoose.model('Music', musicSchema);
 
 // Enhanced Audio Upload Setup with chunked upload
+// In your backend (server.js), enhance the CORS and upload handling:
+
+// Replace your current CORS setup with this more permissive one for testing:
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Length', 'X-Request-Id'],
+    maxAge: 86400
+}));
+
+// Add this middleware to handle preflight requests
+app.options('*', cors());
+
+// Modify your Cloudinary storage config:
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'music_uploads',
         resource_type: 'auto',
         allowed_formats: ['mp3', 'wav', 'mpeg'],
-        chunk_size: 6000000, // 6MB chunks for large files
-        transformation: [
-            { quality: 'auto' },
-            { fetch_format: 'auto' }
-        ]
+        chunk_size: 20 * 1024 * 1024, // Increase to 20MB chunks
+        timeout: 120000 // 2 minutes timeout per chunk
     }
 });
 
-const upload = multer({ 
+const upload = multer({
     storage,
-    limits: { 
+    limits: {
         fileSize: 100 * 1024 * 1024, // 100MB limit
         fieldSize: 100 * 1024 * 1024,
         files: 1,
@@ -119,7 +131,7 @@ const upload = multer({
             mimetype: file.mimetype,
             size: file.size
         });
-        
+
         const allowedTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav'];
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
@@ -245,24 +257,24 @@ app.get('/api/auth/me', protect, async (req, res) => {
 app.post('/api/music', protect, (req, res) => {
     console.log('POST /api/music - Request received');
     console.log('Headers:', req.headers);
-    
+
     // Extend timeout for this specific route
     req.setTimeout(900000); // 15 minutes
     res.setTimeout(900000); // 15 minutes
-    
+
     // Add progress logging
     let uploadStartTime = Date.now();
-    
+
     upload.single('audio')(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
             if (err.code === 'LIMIT_FILE_SIZE') {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
                     error: "File too large. Maximum size is 100MB"
                 });
             }
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
                 error: err.message || "File upload error"
             });
@@ -280,17 +292,17 @@ app.post('/api/music', protect, (req, res) => {
 
             // Validate required fields
             if (!req.body.title || !req.body.price) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    error: "Title and price are required" 
+                    error: "Title and price are required"
                 });
             }
 
             // Validate audio file
             if (!req.file) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    error: "Audio file is required" 
+                    error: "Audio file is required"
                 });
             }
 
@@ -304,10 +316,10 @@ app.post('/api/music', protect, (req, res) => {
             });
 
             await newMusic.save();
-            
+
             console.log('Music saved successfully:', newMusic._id);
             console.log('Total time:', (Date.now() - uploadStartTime) / 1000, 'seconds');
-            
+
             res.status(201).json({
                 success: true,
                 message: 'Music uploaded successfully',
@@ -316,10 +328,10 @@ app.post('/api/music', protect, (req, res) => {
 
         } catch (err) {
             console.error('Error creating music:', err);
-            res.status(500).json({ 
+            res.status(500).json({
                 success: false,
                 error: "Server error",
-                message: err.message 
+                message: err.message
             });
         }
     });
@@ -339,17 +351,17 @@ app.put('/api/music/:id', protect, (req, res) => {
     // Set longer timeout for updates with potential file uploads
     req.setTimeout(900000);
     res.setTimeout(900000);
-    
+
     upload.single('audio')(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
             if (err.code === 'LIMIT_FILE_SIZE') {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
                     error: "File too large. Maximum size is 100MB"
                 });
             }
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
                 error: err.message || "File upload error"
             });
@@ -389,10 +401,10 @@ app.put('/api/music/:id', protect, (req, res) => {
             }
 
             await music.save();
-            res.json({ 
+            res.json({
                 success: true,
-                message: 'Music updated successfully', 
-                data: music 
+                message: 'Music updated successfully',
+                data: music
             });
         } catch (err) {
             console.error('Error updating music:', err);
@@ -427,9 +439,9 @@ app.delete('/api/music/:id', protect, async (req, res) => {
         // Delete from database
         await Music.findByIdAndDelete(id);
 
-        res.json({ 
+        res.json({
             success: true,
-            message: 'Music deleted successfully' 
+            message: 'Music deleted successfully'
         });
     } catch (err) {
         console.error('Error deleting music:', err);
@@ -450,15 +462,15 @@ app.get("/", (req, res) => {
 // Enhanced Error handling middleware
 app.use((err, req, res, next) => {
     console.error('Global error handler:', err);
-    
+
     if (err.type === 'entity.too.large') {
         return res.status(413).json({
             success: false,
             error: 'File too large. Maximum size is 100MB'
         });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
         success: false,
         error: 'Something went wrong!',
         message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
