@@ -91,29 +91,17 @@ const User = mongoose.model('User', userSchema);
 const Music = mongoose.model('Music', musicSchema);
 
 // Enhanced Audio Upload Setup with chunked upload
-// In your backend (server.js), enhance the CORS and upload handling:
-
-// Replace your current CORS setup with this more permissive one for testing:
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    exposedHeaders: ['Content-Length', 'X-Request-Id'],
-    maxAge: 86400
-}));
-
-// Add this middleware to handle preflight requests
-app.options('*', cors());
-
-// Modify your Cloudinary storage config:
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'music_uploads',
         resource_type: 'auto',
         allowed_formats: ['mp3', 'wav', 'mpeg'],
-        chunk_size: 20 * 1024 * 1024, // Increase to 20MB chunks
-        timeout: 120000 // 2 minutes timeout per chunk
+        chunk_size: 6000000, // 6MB chunks for large files
+        transformation: [
+            { quality: 'auto' },
+            { fetch_format: 'auto' }
+        ]
     }
 });
 
