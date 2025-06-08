@@ -12,8 +12,18 @@ const { check, validationResult } = require('express-validator');
 // Initialize app
 const app = express();
 
-// Middleware
-app.use(cors());
+// Middleware 
+const corsOptions = {
+  origin: ['http://localhost:5173', 'https://your-frontend-domain.com'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // Cloudinary Config
