@@ -154,7 +154,7 @@ app.post('/api/auth/login', [
     }
 });
 
-app.get('/api/auth/me', protect, async (req, res) => {
+app.get('/api/auth/me',   async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('-password');
         res.json(user);
@@ -165,7 +165,7 @@ app.get('/api/auth/me', protect, async (req, res) => {
 });
 
 // Music Routes
-app.post('/api/music', protect, upload.single('audio'), async (req, res) => {
+app.post('/api/music',  upload.single('audio'), async (req, res) => {
     try {
         const { title, description, price } = req.body;
         const newMusic = new Music({
@@ -192,7 +192,7 @@ app.get('/api/music', async (req, res) => {
     }
 });
 
-app.put('/api/music/:id', protect, upload.single('audio'), async (req, res) => {
+app.put('/api/music/:id',  upload.single('audio'), async (req, res) => {
     try {
         const { id } = req.params;
         const { title, description, price } = req.body;
@@ -224,7 +224,7 @@ app.put('/api/music/:id', protect, upload.single('audio'), async (req, res) => {
     }
 });
 
-app.delete('/api/music/:id', protect, async (req, res) => {
+app.delete('/api/music/:id',   async (req, res) => {
     try {
         const { id } = req.params;
         const music = await Music.findById(id);
