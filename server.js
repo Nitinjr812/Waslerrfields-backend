@@ -12,20 +12,34 @@ const { check, validationResult } = require('express-validator');
 // Initialize app
 const app = express();
 
-// Middleware
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'https://your-production-frontend.com'
-];
-
+// Middleware - CORS fix for Vercel
 app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'] // Authorization header add kiya
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'https://your-production-frontend.com'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all origins for now - you can restrict later
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Cloudinary Config
 cloudinary.config({
@@ -77,7 +91,18 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({ 
     storage,
-    limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit
+    limits: { 
+        fileSize: 50 * 1024 * 1024, // 50MB limit increase kiya
+        fieldSize: 50 * 1024 * 1024
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only MP3 and WAV files are allowed!'), false);
+        }
+    }
 });
 
 // Auth Middleware
@@ -107,7 +132,23 @@ const protect = async (req, res, next) => {
     }
 };
 
-// Routes
+// Handle preflight requests
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.sendStatus(200);
+});
+
+// Add headers middleware
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    next();
+});
 
 // Test Route
 app.get('/api/test', (req, res) => {
@@ -195,53 +236,64 @@ app.get('/api/auth/me', protect, async (req, res) => {
 });
 
 // Music Routes
-app.post('/api/music', protect, upload.single('audio'), async (req, res) => {
-    try {
-        console.log('Request body:', req.body);
-        console.log('File:', req.file);
-        console.log('User:', req.user);
-
-        // Validate required fields
-        if (!req.body.title || !req.body.price) {
+app.post('/api/music', protect, (req, res) => {
+    // Handle multer errors
+    upload.single('audio')(req, res, async (err) => {
+        if (err) {
+            console.error('Multer error:', err);
             return res.status(400).json({ 
                 success: false,
-                error: "Title and price are required" 
+                error: err.message || "File upload error"
             });
         }
 
-        // Validate audio file
-        if (!req.file) {
-            return res.status(400).json({ 
+        try {
+            console.log('Request body:', req.body);
+            console.log('File:', req.file);
+            console.log('User:', req.user);
+
+            // Validate required fields
+            if (!req.body.title || !req.body.price) {
+                return res.status(400).json({ 
+                    success: false,
+                    error: "Title and price are required" 
+                });
+            }
+
+            // Validate audio file
+            if (!req.file) {
+                return res.status(400).json({ 
+                    success: false,
+                    error: "Audio file is required" 
+                });
+            }
+
+            const newMusic = new Music({
+                title: req.body.title,
+                description: req.body.description || '',
+                price: parseFloat(req.body.price),
+                audioUrl: req.file.path,
+                cloudinaryId: req.file.filename,
+                user: req.user._id
+            });
+
+            await newMusic.save();
+            
+            res.status(201).json({
+                success: true,
+                message: 'Music uploaded successfully',
+                data: newMusic
+            });
+
+        } catch (err) {
+            console.error('Error creating music:', err);
+            res.status(500).json({ 
                 success: false,
-                error: "Audio file is required" 
+                error: "Server error",
+                message: err.message 
             });
         }
-
-        const newMusic = new Music({
-            title: req.body.title,
-            description: req.body.description || '',
-            price: parseFloat(req.body.price),
-            audioUrl: req.file.path,
-            cloudinaryId: req.file.filename,
-            user: req.user._id
-        });
-
-        await newMusic.save();
-        
-        res.status(201).json({
-            success: true,
-            message: 'Music uploaded successfully',
-            data: newMusic
-        });
-
-    } catch (err) {
-        console.error('Error creating music:', err);
-        res.status(500).json({ 
-            success: false,
-            error: "Server error",
-            message: err.message 
-        });
-    }
+    });
 });
 
 app.get('/api/music', async (req, res) => {
@@ -254,46 +306,56 @@ app.get('/api/music', async (req, res) => {
     }
 });
 
-app.put('/api/music/:id', protect, upload.single('audio'), async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { title, description, price } = req.body;
-
-        const music = await Music.findById(id);
-        if (!music) {
-            return res.status(404).json({ error: 'Music not found' });
+app.put('/api/music/:id', protect, (req, res) => {
+    upload.single('audio')(req, res, async (err) => {
+        if (err) {
+            console.error('Multer error:', err);
+            return res.status(400).json({ 
+                success: false,
+                error: err.message || "File upload error"
+            });
         }
 
-        // Check if user owns the music
-        if (music.user.toString() !== req.user._id.toString()) {
-            return res.status(401).json({ error: 'Not authorized' });
-        }
+        try {
+            const { id } = req.params;
+            const { title, description, price } = req.body;
 
-        // Update fields
-        music.title = title || music.title;
-        music.description = description !== undefined ? description : music.description;
-        music.price = price ? parseFloat(price) : music.price;
-
-        // Update audio if new file provided
-        if (req.file) {
-            // Delete old file from Cloudinary
-            if (music.cloudinaryId) {
-                await cloudinary.uploader.destroy(music.cloudinaryId);
+            const music = await Music.findById(id);
+            if (!music) {
+                return res.status(404).json({ error: 'Music not found' });
             }
-            music.audioUrl = req.file.path;
-            music.cloudinaryId = req.file.filename;
-        }
 
-        await music.save();
-        res.json({ 
-            success: true,
-            message: 'Music updated successfully', 
-            data: music 
-        });
-    } catch (err) {
-        console.error('Error updating music:', err);
-        res.status(500).json({ error: err.message });
-    }
+            // Check if user owns the music
+            if (music.user.toString() !== req.user._id.toString()) {
+                return res.status(401).json({ error: 'Not authorized' });
+            }
+
+            // Update fields
+            music.title = title || music.title;
+            music.description = description !== undefined ? description : music.description;
+            music.price = price ? parseFloat(price) : music.price;
+
+            // Update audio if new file provided
+            if (req.file) {
+                // Delete old file from Cloudinary
+                if (music.cloudinaryId) {
+                    await cloudinary.uploader.destroy(music.cloudinaryId);
+                }
+                music.audioUrl = req.file.path;
+                music.cloudinaryId = req.file.filename;
+            }
+
+            await music.save();
+            res.json({ 
+                success: true,
+                message: 'Music updated successfully', 
+                data: music 
+            });
+        } catch (err) {
+            console.error('Error updating music:', err);
+            res.status(500).json({ error: err.message });
+        }
+    });
 });
 
 app.delete('/api/music/:id', protect, async (req, res) => {
