@@ -12,7 +12,7 @@ const { check, validationResult } = require('express-validator');
 // Initialize app
 const app = express();
 
-// Middleware - CORS fix for Vercel
+// Enhanced CORS configuration for large file uploads
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -25,35 +25,70 @@ app.use(cors({
       'https://your-production-frontend.com'
     ];
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all origins for now - you can restrict later
-    }
+    // For development, allow all origins
+    callback(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'x-auth-token',
+    'Access-Control-Allow-Origin',
+    'Access-Control-Allow-Headers',
+    'Origin',
+    'Accept',
+    'X-Requested-With'
+  ],
   credentials: true,
   preflightContinue: false,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  maxAge: 86400 // 24 hours
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Increase payload limits for large files
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true, parameterLimit: 50000 }));
 
-// Cloudinary Config
+// Set timeout for requests
+app.use((req, res, next) => {
+  req.setTimeout(300000); // 5 minutes
+  res.setTimeout(300000); // 5 minutes
+  next();
+});
+
+// Enhanced CORS headers middleware - MUST be before routes
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  res.header('Access-Control-Allow-Origin', origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Origin, Accept, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Cloudinary Config with optimized settings
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('MongoDB Connected'))
-    .catch(err => console.log('MongoDB Error:', err));
+// MongoDB Connection with optimized settings
+mongoose.connect(process.env.MONGO_URI, {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+})
+.then(() => console.log('MongoDB Connected'))
+.catch(err => console.log('MongoDB Error:', err));
 
-// Models - Simple inline models
+// Models
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
@@ -79,28 +114,35 @@ const musicSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Music = mongoose.model('Music', musicSchema);
 
-// Audio Upload Setup
+// Enhanced Audio Upload Setup
 const storage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: 'music_uploads',
         resource_type: 'auto',
-        allowed_formats: ['mp3', 'wav']
+        allowed_formats: ['mp3', 'wav', 'mpeg'],
+        transformation: [
+            { quality: 'auto' },
+            { fetch_format: 'auto' }
+        ]
     }
 });
 
 const upload = multer({ 
     storage,
     limits: { 
-        fileSize: 50 * 1024 * 1024, // 50MB limit increase kiya
-        fieldSize: 50 * 1024 * 1024
+        fileSize: 100 * 1024 * 1024, // 100MB limit
+        fieldSize: 100 * 1024 * 1024,
+        files: 1,
+        fields: 10
     },
     fileFilter: (req, file, cb) => {
+        console.log('File received:', file);
         const allowedTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav'];
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
-            cb(new Error('Only MP3 and WAV files are allowed!'), false);
+            cb(new Error(`Invalid file type: ${file.mimetype}. Only MP3 and WAV files are allowed!`), false);
         }
     }
 });
@@ -121,7 +163,7 @@ const protect = async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.user.id); // Fix: decoded.user.id
+        req.user = await User.findById(decoded.user.id);
         if (!req.user) {
             return res.status(401).json({ success: false, message: 'User not found' });
         }
@@ -132,27 +174,9 @@ const protect = async (req, res, next) => {
     }
 };
 
-// Handle preflight requests
-app.options('*', (req, res) => {
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.sendStatus(200);
-});
-
-// Add headers middleware
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    next();
-});
-
 // Test Route
 app.get('/api/test', (req, res) => {
-    res.json({ message: "API Working!" });
+    res.json({ message: "API Working!", timestamp: new Date().toISOString() });
 });
 
 // Auth Routes
@@ -235,12 +259,24 @@ app.get('/api/auth/me', protect, async (req, res) => {
     }
 });
 
-// Music Routes
+// Enhanced Music Routes
 app.post('/api/music', protect, (req, res) => {
-    // Handle multer errors
+    console.log('POST /api/music - Request received');
+    console.log('Headers:', req.headers);
+    
+    // Set longer timeout for this route
+    req.setTimeout(600000); // 10 minutes for large file uploads
+    res.setTimeout(600000);
+    
     upload.single('audio')(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ 
+                    success: false,
+                    error: "File too large. Maximum size is 100MB"
+                });
+            }
             return res.status(400).json({ 
                 success: false,
                 error: err.message || "File upload error"
@@ -249,8 +285,12 @@ app.post('/api/music', protect, (req, res) => {
 
         try {
             console.log('Request body:', req.body);
-            console.log('File:', req.file);
-            console.log('User:', req.user);
+            console.log('File info:', req.file ? {
+                originalname: req.file.originalname,
+                mimetype: req.file.mimetype,
+                size: req.file.size,
+                path: req.file.path
+            } : 'No file');
 
             // Validate required fields
             if (!req.body.title || !req.body.price) {
@@ -278,6 +318,8 @@ app.post('/api/music', protect, (req, res) => {
             });
 
             await newMusic.save();
+            
+            console.log('Music saved successfully:', newMusic._id);
             
             res.status(201).json({
                 success: true,
@@ -307,9 +349,19 @@ app.get('/api/music', async (req, res) => {
 });
 
 app.put('/api/music/:id', protect, (req, res) => {
+    // Set longer timeout for updates with potential file uploads
+    req.setTimeout(600000);
+    res.setTimeout(600000);
+    
     upload.single('audio')(req, res, async (err) => {
         if (err) {
             console.error('Multer error:', err);
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ 
+                    success: false,
+                    error: "File too large. Maximum size is 100MB"
+                });
+            }
             return res.status(400).json({ 
                 success: false,
                 error: err.message || "File upload error"
@@ -339,7 +391,11 @@ app.put('/api/music/:id', protect, (req, res) => {
             if (req.file) {
                 // Delete old file from Cloudinary
                 if (music.cloudinaryId) {
-                    await cloudinary.uploader.destroy(music.cloudinaryId);
+                    try {
+                        await cloudinary.uploader.destroy(music.cloudinaryId, { resource_type: 'auto' });
+                    } catch (deleteErr) {
+                        console.error('Error deleting old file:', deleteErr);
+                    }
                 }
                 music.audioUrl = req.file.path;
                 music.cloudinaryId = req.file.filename;
@@ -374,7 +430,11 @@ app.delete('/api/music/:id', protect, async (req, res) => {
 
         // Delete from Cloudinary
         if (music.cloudinaryId) {
-            await cloudinary.uploader.destroy(music.cloudinaryId);
+            try {
+                await cloudinary.uploader.destroy(music.cloudinaryId, { resource_type: 'auto' });
+            } catch (deleteErr) {
+                console.error('Error deleting from Cloudinary:', deleteErr);
+            }
         }
 
         // Delete from database
@@ -393,17 +453,36 @@ app.delete('/api/music/:id', protect, async (req, res) => {
 app.get("/", (req, res) => {
     res.json({
         status: true,
-        message: "Music API is running!"
+        message: "Music API is running!",
+        timestamp: new Date().toISOString(),
+        cors: "enabled",
+        fileUpload: "enabled (100MB limit)"
     });
 });
 
-// Error handling middleware
+// Enhanced Error handling middleware
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    console.error('Global error handler:', err);
+    
+    if (err.type === 'entity.too.large') {
+        return res.status(413).json({
+            success: false,
+            error: 'File too large. Maximum size is 100MB'
+        });
+    }
+    
     res.status(500).json({ 
         success: false,
         error: 'Something went wrong!',
-        message: err.message 
+        message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({
+        success: false,
+        message: `Route ${req.originalUrl} not found`
     });
 });
 
@@ -411,4 +490,6 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log('CORS enabled for all origins');
+    console.log('File upload limit: 100MB');
 });
