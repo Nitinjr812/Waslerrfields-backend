@@ -14,14 +14,14 @@ const app = express();
 
 // Middleware
 const allowedOrigins = [
-  'http://localhost:5173',
-  'https://your-production-frontend.com'
+    'http://localhost:5173',
+    'https://your-production-frontend.com'
 ];
 
 app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type']
 }));
 
 app.use(express.json());
@@ -154,7 +154,7 @@ app.post('/api/auth/login', [
     }
 });
 
-app.get('/api/auth/me',   async (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('-password');
         res.json(user);
@@ -165,21 +165,41 @@ app.get('/api/auth/me',   async (req, res) => {
 });
 
 // Music Routes
-app.post('/api/music',  upload.single('audio'), async (req, res) => {
+// In your backend route handler
+app.post('/api/music', upload.single('audio'), async (req, res) => {
     try {
-        const { title, description, price } = req.body;
+        // Validate required fields
+        if (!req.body.title || !req.body.price) {
+            return res.status(400).json({ error: "Title and price are required" });
+        }
+
+        // Validate audio file if needed
+        if (req.file) {
+            if (req.file.size > 25 * 1024 * 1024) {
+                return res.status(400).json({ error: "File too large (max 25MB)" });
+            }
+        } else if (!isEditing) {
+            return res.status(400).json({ error: "Audio file is required" });
+        }
+
         const newMusic = new Music({
-            title,
-            description,
-            price,
-            audioUrl: req.file.path,
-            cloudinaryId: req.file.filename,
-            user: req.user.id
+            title: req.body.title,
+            description: req.body.description,
+            price: req.body.price,
+            audioUrl: req.file?.path || existingMusic.audioUrl,
+            cloudinaryId: req.file?.filename || existingMusic.cloudinaryId,
+            user: req.user?.id || null // Remove if not using auth
         });
+
         await newMusic.save();
         res.status(201).json(newMusic);
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Error creating music:', err);
+        res.status(500).json({
+            error: "Server error",
+            message: err.message
+        });
     }
 });
 
@@ -192,7 +212,7 @@ app.get('/api/music', async (req, res) => {
     }
 });
 
-app.put('/api/music/:id',  upload.single('audio'), async (req, res) => {
+app.put('/api/music/:id', upload.single('audio'), async (req, res) => {
     try {
         const { id } = req.params;
         const { title, description, price } = req.body;
@@ -224,7 +244,7 @@ app.put('/api/music/:id',  upload.single('audio'), async (req, res) => {
     }
 });
 
-app.delete('/api/music/:id',   async (req, res) => {
+app.delete('/api/music/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const music = await Music.findById(id);
@@ -248,9 +268,9 @@ app.delete('/api/music/:id',   async (req, res) => {
 });
 
 
-app.get("/",(req,res)=>{
+app.get("/", (req, res) => {
     res.json({
-        status:true
+        status: true
 
     })
 })
