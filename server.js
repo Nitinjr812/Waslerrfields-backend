@@ -15,13 +15,14 @@ const app = express();
 // Middleware
 const allowedOrigins = [
   'http://localhost:5173',
+  'http://localhost:3000',
   'https://your-production-frontend.com'
 ];
 
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'Authorization'] // Authorization header add kiya
 }));
 
 app.use(express.json());
@@ -38,9 +39,31 @@ mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB Connected'))
     .catch(err => console.log('MongoDB Error:', err));
 
-// Models
-const User = require('./models/User');
-const Music = require('./models/Music');
+// Models - Simple inline models
+const userSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true, select: false },
+    role: { type: String, default: 'user' }
+}, { timestamps: true });
+
+userSchema.pre('save', async function(next) {
+    if (!this.isModified('password')) return next();
+    this.password = await bcrypt.hash(this.password, 12);
+    next();
+});
+
+const musicSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    description: { type: String },
+    price: { type: Number, required: true },
+    audioUrl: { type: String, required: true },
+    cloudinaryId: { type: String, required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+}, { timestamps: true });
+
+const User = mongoose.model('User', userSchema);
+const Music = mongoose.model('Music', musicSchema);
 
 // Audio Upload Setup
 const storage = new CloudinaryStorage({
@@ -52,7 +75,10 @@ const storage = new CloudinaryStorage({
     }
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+    storage,
+    limits: { fileSize: 25 * 1024 * 1024 } // 25MB limit
+});
 
 // Auth Middleware
 const protect = async (req, res, next) => {
@@ -65,15 +91,19 @@ const protect = async (req, res, next) => {
     }
 
     if (!token) {
-        return res.status(401).json({ success: false, message: 'Not authorized' });
+        return res.status(401).json({ success: false, message: 'Not authorized, no token' });
     }
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.id);
+        req.user = await User.findById(decoded.user.id); // Fix: decoded.user.id
+        if (!req.user) {
+            return res.status(401).json({ success: false, message: 'User not found' });
+        }
         next();
     } catch (err) {
-        return res.status(401).json({ success: false, message: 'Not authorized' });
+        console.error('Auth error:', err);
+        return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
 };
 
@@ -115,7 +145,7 @@ app.post('/api/auth/register', [
         });
     } catch (err) {
         console.error(err);
-        res.status(500).send('Server error');
+        res.status(500).json({ error: 'Server error' });
     }
 });
 
@@ -150,69 +180,81 @@ app.post('/api/auth/login', [
         });
     } catch (err) {
         console.error(err);
-        res.status(500).send('Server error');
+        res.status(500).json({ error: 'Server error' });
     }
 });
 
-app.get('/api/auth/me', protect,  async (req, res) => {
+app.get('/api/auth/me', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('-password');
         res.json(user);
     } catch (err) {
         console.error(err);
-        res.status(500).send('Server error');
+        res.status(500).json({ error: 'Server error' });
     }
 });
 
 // Music Routes
-// In your backend route handler
 app.post('/api/music', protect, upload.single('audio'), async (req, res) => {
-  try {
-    // Validate required fields
-    if (!req.body.title || !req.body.price) {
-      return res.status(400).json({ error: "Title and price are required" });
+    try {
+        console.log('Request body:', req.body);
+        console.log('File:', req.file);
+        console.log('User:', req.user);
+
+        // Validate required fields
+        if (!req.body.title || !req.body.price) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Title and price are required" 
+            });
+        }
+
+        // Validate audio file
+        if (!req.file) {
+            return res.status(400).json({ 
+                success: false,
+                error: "Audio file is required" 
+            });
+        }
+
+        const newMusic = new Music({
+            title: req.body.title,
+            description: req.body.description || '',
+            price: parseFloat(req.body.price),
+            audioUrl: req.file.path,
+            cloudinaryId: req.file.filename,
+            user: req.user._id
+        });
+
+        await newMusic.save();
+        
+        res.status(201).json({
+            success: true,
+            message: 'Music uploaded successfully',
+            data: newMusic
+        });
+
+    } catch (err) {
+        console.error('Error creating music:', err);
+        res.status(500).json({ 
+            success: false,
+            error: "Server error",
+            message: err.message 
+        });
     }
-
-    // Validate audio file if needed
-    if (req.file) {
-      if (req.file.size > 25 * 1024 * 1024) {
-        return res.status(400).json({ error: "File too large (max 25MB)" });
-      }
-    } else if (!isEditing) {
-      return res.status(400).json({ error: "Audio file is required" });
-    }
-
-    const newMusic = new Music({
-      title: req.body.title,
-      description: req.body.description,
-      price: req.body.price,
-      audioUrl: req.file?.path || existingMusic.audioUrl,
-      cloudinaryId: req.file?.filename || existingMusic.cloudinaryId,
-      user: req.user?.id || null // Remove if not using auth
-    }); 
-
-    await newMusic.save();
-    res.status(201).json(newMusic);
-
-  } catch (err) {
-    console.error('Error creating music:', err);
-    res.status(500).json({ 
-      error: "Server error",
-      message: err.message 
-    });
-  }
 });
 
-app.get('/api/music', protect, async (req, res) => {
+app.get('/api/music', async (req, res) => {
     try {
-        const music = await Music.find();
+        const music = await Music.find().populate('user', 'name email').sort({ createdAt: -1 });
         res.json(music);
     } catch (err) {
+        console.error('Error fetching music:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.put('/api/music/:id', protect,  upload.single('audio'), async (req, res) => {
+app.put('/api/music/:id', protect, upload.single('audio'), async (req, res) => {
     try {
         const { id } = req.params;
         const { title, description, price } = req.body;
@@ -223,28 +265,38 @@ app.put('/api/music/:id', protect,  upload.single('audio'), async (req, res) => 
         }
 
         // Check if user owns the music
-        if (music.user.toString() !== req.user.id) {
+        if (music.user.toString() !== req.user._id.toString()) {
             return res.status(401).json({ error: 'Not authorized' });
         }
 
+        // Update fields
         music.title = title || music.title;
-        music.description = description || music.description;
-        music.price = price || music.price;
+        music.description = description !== undefined ? description : music.description;
+        music.price = price ? parseFloat(price) : music.price;
 
+        // Update audio if new file provided
         if (req.file) {
-            await cloudinary.uploader.destroy(music.cloudinaryId);
+            // Delete old file from Cloudinary
+            if (music.cloudinaryId) {
+                await cloudinary.uploader.destroy(music.cloudinaryId);
+            }
             music.audioUrl = req.file.path;
             music.cloudinaryId = req.file.filename;
         }
 
         await music.save();
-        res.json({ message: 'Music updated successfully', music });
+        res.json({ 
+            success: true,
+            message: 'Music updated successfully', 
+            data: music 
+        });
     } catch (err) {
+        console.error('Error updating music:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.delete('/api/music/:id',   async (req, res) => {
+app.delete('/api/music/:id', protect, async (req, res) => {
     try {
         const { id } = req.params;
         const music = await Music.findById(id);
@@ -254,26 +306,44 @@ app.delete('/api/music/:id',   async (req, res) => {
         }
 
         // Check if user owns the music
-        if (music.user.toString() !== req.user.id) {
+        if (music.user.toString() !== req.user._id.toString()) {
             return res.status(401).json({ error: 'Not authorized' });
         }
 
-        await cloudinary.uploader.destroy(music.cloudinaryId);
-        await music.remove();
+        // Delete from Cloudinary
+        if (music.cloudinaryId) {
+            await cloudinary.uploader.destroy(music.cloudinaryId);
+        }
 
-        res.json({ message: 'Music deleted successfully' });
+        // Delete from database
+        await Music.findByIdAndDelete(id);
+
+        res.json({ 
+            success: true,
+            message: 'Music deleted successfully' 
+        });
     } catch (err) {
+        console.error('Error deleting music:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-
-app.get("/",(req,res)=>{
+app.get("/", (req, res) => {
     res.json({
-        status:true
+        status: true,
+        message: "Music API is running!"
+    });
+});
 
-    })
-})
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ 
+        success: false,
+        error: 'Something went wrong!',
+        message: err.message 
+    });
+});
 
 // Start server
 const PORT = process.env.PORT || 5000;
