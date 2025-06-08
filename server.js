@@ -237,16 +237,17 @@ app.delete('/api/music/:id', protect, async (req, res) => {
     }
 });
 // Add this to your server.js if not already present
+// Get single music track
 app.get('/api/music/:id', async (req, res) => {
-    try {
-        const music = await Music.findById(req.params.id);
-        if (!music) {
-            return res.status(404).json({ error: 'Music not found' });
-        }
-        res.json(music);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+  try {
+    const music = await Music.findById(req.params.id);
+    if (!music) {
+      return res.status(404).json({ error: 'Music not found' });
     }
+    res.json(music);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Start server
