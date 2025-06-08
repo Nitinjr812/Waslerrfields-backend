@@ -236,6 +236,18 @@ app.delete('/api/music/:id', protect, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// Add this to your server.js if not already present
+app.get('/api/music/:id', async (req, res) => {
+    try {
+        const music = await Music.findById(req.params.id);
+        if (!music) {
+            return res.status(404).json({ error: 'Music not found' });
+        }
+        res.json(music);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Start server
 const PORT = process.env.PORT || 5000;
