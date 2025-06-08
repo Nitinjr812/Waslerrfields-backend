@@ -15,7 +15,8 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json());
- 
+
+// Cloudinary Config
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -235,29 +236,14 @@ app.delete('/api/music/:id', protect, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// Add this to your server.js if not already present
-// Get single music track
-app.get('/api/music/:id', async (req, res) => {
-    try {
-        const music = await Music.findById(req.params.id);
-        if (!music) {
-            return res.status(404).json({ error: 'Music not found' });
-        }
-        res.json(music);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 
-    
-app.get('/', (req, res) => {
+
+app.get("/",(req,res)=>{
     res.json({
-        status: true,
-        
+        status:true
+
     })
 })
-
-
 
 // Start server
 const PORT = process.env.PORT || 5000;
