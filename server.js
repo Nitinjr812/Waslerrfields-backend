@@ -154,15 +154,6 @@ app.post('/api/auth/login', [
     }
 });
 
-app.get('/api/auth/me',  async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id).select('-password');
-        res.json(user);
-    } catch (err) {
-        console.error(err);
-        res.status(500).send('Server error');
-    }
-});
 
 // Music Routes
 app.post('/api/music',  upload.single('audio'), async (req, res) => {
