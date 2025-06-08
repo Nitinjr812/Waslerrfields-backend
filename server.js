@@ -187,8 +187,7 @@ app.post('/api/music', upload.single('audio'), async (req, res) => {
             description: req.body.description,
             price: req.body.price,
             audioUrl: req.file?.path || existingMusic.audioUrl,
-            cloudinaryId: req.file?.filename || existingMusic.cloudinaryId,
-            user: req.user?.id || null // Remove if not using auth
+            cloudinaryId: req.file?.filename || existingMusic.cloudinaryId, 
         });
 
         await newMusic.save();
