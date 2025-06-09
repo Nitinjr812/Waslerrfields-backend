@@ -1,9 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -12,7 +9,7 @@ const { check, validationResult } = require('express-validator');
 // Initialize app
 const app = express();
 
-// Enhanced CORS configuration for large file uploads
+// Enhanced CORS configuration
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -45,14 +42,14 @@ app.use(cors({
   maxAge: 86400 // 24 hours
 }));
 
-// Increase payload limits for large files
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true, parameterLimit: 50000 }));
+// Standard payload limits
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Set timeout for requests
 app.use((req, res, next) => {
-  req.setTimeout(300000); // 5 minutes
-  res.setTimeout(300000); // 5 minutes
+  req.setTimeout(30000); // 30 seconds
+  res.setTimeout(30000); // 30 seconds
   next();
 });
 
@@ -72,13 +69,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Cloudinary Config with optimized settings
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
 // MongoDB Connection with optimized settings
 mongoose.connect(process.env.MONGO_URI, {
     maxPoolSize: 10,
@@ -88,7 +78,7 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log('MongoDB Connected'))
 .catch(err => console.log('MongoDB Error:', err));
 
-// Models
+// User Model
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
@@ -102,50 +92,7 @@ userSchema.pre('save', async function(next) {
     next();
 });
 
-const musicSchema = new mongoose.Schema({
-    title: { type: String, required: true },
-    description: { type: String },
-    price: { type: Number, required: true },
-    audioUrl: { type: String, required: true },
-    cloudinaryId: { type: String, required: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-}, { timestamps: true });
-
 const User = mongoose.model('User', userSchema);
-const Music = mongoose.model('Music', musicSchema);
-
-// Enhanced Audio Upload Setup
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: {
-        folder: 'music_uploads',
-        resource_type: 'auto',
-        allowed_formats: ['mp3', 'wav', 'mpeg'],
-        transformation: [
-            { quality: 'auto' },
-            { fetch_format: 'auto' }
-        ]
-    }
-});
-
-const upload = multer({ 
-    storage,
-    limits: { 
-        fileSize: 100 * 1024 * 1024, // 100MB limit
-        fieldSize: 100 * 1024 * 1024,
-        files: 1,
-        fields: 10
-    },
-    fileFilter: (req, file, cb) => {
-        console.log('File received:', file);
-        const allowedTypes = ['audio/mp3', 'audio/mpeg', 'audio/wav'];
-        if (allowedTypes.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error(`Invalid file type: ${file.mimetype}. Only MP3 and WAV files are allowed!`), false);
-        }
-    }
-});
 
 // Auth Middleware
 const protect = async (req, res, next) => {
@@ -259,204 +206,13 @@ app.get('/api/auth/me', protect, async (req, res) => {
     }
 });
 
-// Enhanced Music Routes
-app.post('/api/music', protect, (req, res) => {
-    console.log('POST /api/music - Request received');
-    console.log('Headers:', req.headers);
-    
-    // Set longer timeout for this route
-    req.setTimeout(600000); // 10 minutes for large file uploads
-    res.setTimeout(600000);
-    
-    upload.single('audio')(req, res, async (err) => {
-        if (err) {
-            console.error('Multer error:', err);
-            if (err.code === 'LIMIT_FILE_SIZE') {
-                return res.status(400).json({ 
-                    success: false,
-                    error: "File too large. Maximum size is 100MB"
-                });
-            }
-            return res.status(400).json({ 
-                success: false,
-                error: err.message || "File upload error"
-            });
-        }
-
-        try {
-            console.log('Request body:', req.body);
-            console.log('File info:', req.file ? {
-                originalname: req.file.originalname,
-                mimetype: req.file.mimetype,
-                size: req.file.size,
-                path: req.file.path
-            } : 'No file');
-
-            // Validate required fields
-            if (!req.body.title || !req.body.price) {
-                return res.status(400).json({ 
-                    success: false,
-                    error: "Title and price are required" 
-                });
-            }
-
-            // Validate audio file
-            if (!req.file) {
-                return res.status(400).json({ 
-                    success: false,
-                    error: "Audio file is required" 
-                });
-            }
-
-            const newMusic = new Music({
-                title: req.body.title,
-                description: req.body.description || '',
-                price: parseFloat(req.body.price),
-                audioUrl: req.file.path,
-                cloudinaryId: req.file.filename,
-                user: req.user._id
-            });
-
-            await newMusic.save();
-            
-            console.log('Music saved successfully:', newMusic._id);
-            
-            res.status(201).json({
-                success: true,
-                message: 'Music uploaded successfully',
-                data: newMusic
-            });
-
-        } catch (err) {
-            console.error('Error creating music:', err);
-            res.status(500).json({ 
-                success: false,
-                error: "Server error",
-                message: err.message 
-            });
-        }
-    });
-});
-
-app.get('/api/music', async (req, res) => {
-    try {
-        const music = await Music.find().populate('user', 'name email').sort({ createdAt: -1 });
-        res.json(music);
-    } catch (err) {
-        console.error('Error fetching music:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.put('/api/music/:id', protect, (req, res) => {
-    // Set longer timeout for updates with potential file uploads
-    req.setTimeout(600000);
-    res.setTimeout(600000);
-    
-    upload.single('audio')(req, res, async (err) => {
-        if (err) {
-            console.error('Multer error:', err);
-            if (err.code === 'LIMIT_FILE_SIZE') {
-                return res.status(400).json({ 
-                    success: false,
-                    error: "File too large. Maximum size is 100MB"
-                });
-            }
-            return res.status(400).json({ 
-                success: false,
-                error: err.message || "File upload error"
-            });
-        }
-
-        try {
-            const { id } = req.params;
-            const { title, description, price } = req.body;
-
-            const music = await Music.findById(id);
-            if (!music) {
-                return res.status(404).json({ error: 'Music not found' });
-            }
-
-            // Check if user owns the music
-            if (music.user.toString() !== req.user._id.toString()) {
-                return res.status(401).json({ error: 'Not authorized' });
-            }
-
-            // Update fields
-            music.title = title || music.title;
-            music.description = description !== undefined ? description : music.description;
-            music.price = price ? parseFloat(price) : music.price;
-
-            // Update audio if new file provided
-            if (req.file) {
-                // Delete old file from Cloudinary
-                if (music.cloudinaryId) {
-                    try {
-                        await cloudinary.uploader.destroy(music.cloudinaryId, { resource_type: 'auto' });
-                    } catch (deleteErr) {
-                        console.error('Error deleting old file:', deleteErr);
-                    }
-                }
-                music.audioUrl = req.file.path;
-                music.cloudinaryId = req.file.filename;
-            }
-
-            await music.save();
-            res.json({ 
-                success: true,
-                message: 'Music updated successfully', 
-                data: music 
-            });
-        } catch (err) {
-            console.error('Error updating music:', err);
-            res.status(500).json({ error: err.message });
-        }
-    });
-});
-
-app.delete('/api/music/:id', protect, async (req, res) => {
-    try {
-        const { id } = req.params;
-        const music = await Music.findById(id);
-
-        if (!music) {
-            return res.status(404).json({ error: 'Music not found' });
-        }
-
-        // Check if user owns the music
-        if (music.user.toString() !== req.user._id.toString()) {
-            return res.status(401).json({ error: 'Not authorized' });
-        }
-
-        // Delete from Cloudinary
-        if (music.cloudinaryId) {
-            try {
-                await cloudinary.uploader.destroy(music.cloudinaryId, { resource_type: 'auto' });
-            } catch (deleteErr) {
-                console.error('Error deleting from Cloudinary:', deleteErr);
-            }
-        }
-
-        // Delete from database
-        await Music.findByIdAndDelete(id);
-
-        res.json({ 
-            success: true,
-            message: 'Music deleted successfully' 
-        });
-    } catch (err) {
-        console.error('Error deleting music:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
+// Basic route
 app.get("/", (req, res) => {
     res.json({
         status: true,
-        message: "Music API is running!",
+        message: "API is running!",
         timestamp: new Date().toISOString(),
-        cors: "enabled",
-        fileUpload: "enabled (100MB limit)"
+        cors: "enabled"
     });
 });
 
@@ -467,7 +223,7 @@ app.use((err, req, res, next) => {
     if (err.type === 'entity.too.large') {
         return res.status(413).json({
             success: false,
-            error: 'File too large. Maximum size is 100MB'
+            error: 'Payload too large'
         });
     }
     
@@ -491,5 +247,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log('CORS enabled for all origins');
-    console.log('File upload limit: 100MB');
 });
