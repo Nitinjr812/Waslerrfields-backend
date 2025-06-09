@@ -11,35 +11,35 @@ const app = express();
 
 // Enhanced CORS configuration
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'https://your-production-frontend.com'
-    ];
-    
-    // For development, allow all origins
-    callback(null, true);
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'x-auth-token',
-    'Access-Control-Allow-Origin',
-    'Access-Control-Allow-Headers',
-    'Origin',
-    'Accept',
-    'X-Requested-With'
-  ],
-  credentials: true,
-  preflightContinue: false,
-  optionsSuccessStatus: 200,
-  maxAge: 86400 // 24 hours
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+            'http://localhost:5173',
+            'http://localhost:3000',
+            'http://127.0.0.1:5173',
+            'https://your-production-frontend.com'
+        ];
+
+        // For development, allow all origins
+        callback(null, true);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'x-auth-token',
+        'Access-Control-Allow-Origin',
+        'Access-Control-Allow-Headers',
+        'Origin',
+        'Accept',
+        'X-Requested-With'
+    ],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 200,
+    maxAge: 86400 // 24 hours
 }));
 
 // Standard payload limits
@@ -48,25 +48,25 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Set timeout for requests
 app.use((req, res, next) => {
-  req.setTimeout(30000); // 30 seconds
-  res.setTimeout(30000); // 30 seconds
-  next();
+    req.setTimeout(30000); // 30 seconds
+    res.setTimeout(30000); // 30 seconds
+    next();
 });
 
 // Enhanced CORS headers middleware - MUST be before routes
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  res.header('Access-Control-Allow-Origin', origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Origin, Accept, X-Requested-With');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400');
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
+    const origin = req.headers.origin;
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Origin, Accept, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
 });
 
 // MongoDB Connection with optimized settings
@@ -75,8 +75,8 @@ mongoose.connect(process.env.MONGO_URI, {
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
-.then(() => console.log('MongoDB Connected'))
-.catch(err => console.log('MongoDB Error:', err));
+    .then(() => console.log('MongoDB Connected'))
+    .catch(err => console.log('MongoDB Error:', err));
 
 // User Model
 const userSchema = new mongoose.Schema({
@@ -86,13 +86,77 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: 'user' }
 }, { timestamps: true });
 
-userSchema.pre('save', async function(next) {
+userSchema.pre('save', async function (next) {
     if (!this.isModified('password')) return next();
     this.password = await bcrypt.hash(this.password, 12);
     next();
 });
 
-const User = mongoose.model('User', userSchema);
+const User = mongoose.model('User', userSchema); 
+
+// Cart Model
+const cartSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    items: [{
+        productId: { type: String, required: true },
+        title: { type: String, required: true },
+        artist: { type: String, required: true },
+        price: { type: Number, required: true },
+        image: { type: String },
+        quantity: { type: Number, default: 1 }
+    }],
+    updatedAt: { type: Date, default: Date.now }
+});
+
+const Cart = mongoose.model('Cart', cartSchema);
+
+// Get or Create Cart
+app.get('/api/cart', protect, async (req, res) => {
+    try {
+        let cart = await Cart.findOne({ user: req.user.id });
+        if (!cart) {
+            cart = new Cart({ user: req.user.id, items: [] });
+            await cart.save();
+        }
+        res.json(cart);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// Update Cart
+app.put('/api/cart', protect, async (req, res) => {
+    try {
+        const { items } = req.body;
+        const cart = await Cart.findOneAndUpdate(
+            { user: req.user.id },
+            { items, updatedAt: Date.now() },
+            { new: true }
+        );
+        res.json(cart);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// Clear Cart
+app.delete('/api/cart', protect, async (req, res) => {
+    try {
+        const cart = await Cart.findOneAndUpdate(
+            { user: req.user.id },
+            { items: [] },
+            { new: true }
+        );
+        res.json(cart);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+
 
 // Auth Middleware
 const protect = async (req, res, next) => {
@@ -219,15 +283,15 @@ app.get("/", (req, res) => {
 // Enhanced Error handling middleware
 app.use((err, req, res, next) => {
     console.error('Global error handler:', err);
-    
+
     if (err.type === 'entity.too.large') {
         return res.status(413).json({
             success: false,
             error: 'Payload too large'
         });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
         success: false,
         error: 'Something went wrong!',
         message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
