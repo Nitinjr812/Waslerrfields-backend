@@ -158,19 +158,29 @@ app.get('/api/cart', protect, async (req, res) => {
 app.put('/api/cart', protect, async (req, res) => {
     try {
         const { items } = req.body;
+        
+        // Add validation
+        if (!items || !Array.isArray(items)) {
+            return res.status(400).json({ error: 'Invalid items data' });
+        }
+        
+        console.log('Updating cart for user:', req.user.id);
+        console.log('Items received:', items);
+        
         const cart = await Cart.findOneAndUpdate(
             { user: req.user.id },
             { items, updatedAt: Date.now() },
-            { new: true }
+            { new: true, upsert: true } // upsert: true creates cart if doesn't exist
         );
+        
+        console.log('Cart updated successfully:', cart);
         res.json(cart);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
+        console.error('Error updating cart:', err);
+        res.status(500).json({ error: 'Server error', details: err.message });
     }
 });
-
-// Clear Cart
+ 
 app.delete('/api/cart', protect, async (req, res) => {
     try {
         const cart = await Cart.findOneAndUpdate(
