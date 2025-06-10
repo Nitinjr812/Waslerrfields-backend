@@ -110,6 +110,34 @@ const cartSchema = new mongoose.Schema({
 
 const Cart = mongoose.model('Cart', cartSchema);
 
+
+// Auth Middleware
+const protect = async (req, res, next) => {
+    let token;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
+    } else if (req.header('x-auth-token')) {
+        token = req.header('x-auth-token');
+    }
+
+    if (!token) {
+        return res.status(401).json({ success: false, message: 'Not authorized, no token' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = await User.findById(decoded.user.id);
+        if (!req.user) {
+            return res.status(401).json({ success: false, message: 'User not found' });
+        }
+        next();
+    } catch (err) {
+        console.error('Auth error:', err);
+        return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
+    }
+};
+
 // Get or Create Cart
 app.get('/api/cart', protect, async (req, res) => {
     try {
@@ -158,33 +186,6 @@ app.delete('/api/cart', protect, async (req, res) => {
 });
 
 
-
-// Auth Middleware
-const protect = async (req, res, next) => {
-    let token;
-
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        token = req.headers.authorization.split(' ')[1];
-    } else if (req.header('x-auth-token')) {
-        token = req.header('x-auth-token');
-    }
-
-    if (!token) {
-        return res.status(401).json({ success: false, message: 'Not authorized, no token' });
-    }
-
-    try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.user.id);
-        if (!req.user) {
-            return res.status(401).json({ success: false, message: 'User not found' });
-        }
-        next();
-    } catch (err) {
-        console.error('Auth error:', err);
-        return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
-    }
-};
 
 // Test Route
 app.get('/api/test', (req, res) => {
