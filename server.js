@@ -92,7 +92,7 @@ userSchema.pre('save', async function (next) {
     next();
 });
 
-const User = mongoose.model('User', userSchema); 
+const User = mongoose.model('User', userSchema);
 
 // Cart Model
 const cartSchema = new mongoose.Schema({
@@ -118,6 +118,7 @@ app.get('/api/cart', protect, async (req, res) => {
             cart = new Cart({ user: req.user.id, items: [] });
             await cart.save();
         }
+
         res.json(cart);
     } catch (err) {
         console.error(err);
