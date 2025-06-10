@@ -136,48 +136,146 @@ const protect = async (req, res, next) => {
         console.error('Auth error:', err);
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
-};
-
-// Get or Create Cart
-app.get('/api/cart', protect, async (req, res) => {
-    try {
-        let cart = await Cart.findOne({ user: req.user.id });
-        if (!cart) {
-            cart = new Cart({ user: req.user.id, items: [] });
-            await cart.save();
-        }
-
-        res.json(cart);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+}; 
 
 // Update Cart
 app.put('/api/cart', protect, async (req, res) => {
     try {
+        console.log('=== CART UPDATE REQUEST ===');
+        console.log('User ID:', req.user.id);
+        console.log('Request body:', req.body);
+        
         const { items } = req.body;
         
-        // Add validation
-        if (!items || !Array.isArray(items)) {
-            return res.status(400).json({ error: 'Invalid items data' });
+        // Validate request body
+        if (!items) {
+            console.log('ERROR: No items provided');
+            return res.status(400).json({ 
+                error: 'Items are required',
+                success: false 
+            });
         }
         
-        console.log('Updating cart for user:', req.user.id);
-        console.log('Items received:', items);
+        if (!Array.isArray(items)) {
+            console.log('ERROR: Items is not an array');
+            return res.status(400).json({ 
+                error: 'Items must be an array',
+                success: false 
+            });
+        }
         
+        // Validate each item structure
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            if (!item.productId || !item.title || !item.artist || !item.price) {
+                console.log(`ERROR: Invalid item structure at index ${i}:`, item);
+                return res.status(400).json({ 
+                    error: `Invalid item structure at index ${i}`,
+                    success: false 
+                });
+            }
+        }
+        
+        console.log('All validations passed. Updating cart...');
+        
+        // Check if user exists
+        const userExists = await User.findById(req.user.id);
+        if (!userExists) {
+            console.log('ERROR: User not found');
+            return res.status(404).json({ 
+                error: 'User not found',
+                success: false 
+            });
+        }
+        
+        // Update or create cart
         const cart = await Cart.findOneAndUpdate(
             { user: req.user.id },
-            { items, updatedAt: Date.now() },
-            { new: true, upsert: true } // upsert: true creates cart if doesn't exist
+            { 
+                items: items,
+                updatedAt: new Date()
+            },
+            { 
+                new: true, 
+                upsert: true,  // Create if doesn't exist
+                runValidators: true  // Run schema validations
+            }
         );
         
-        console.log('Cart updated successfully:', cart);
-        res.json(cart);
+        console.log('Cart updated successfully:', cart._id);
+        console.log('Items count:', cart.items.length);
+        
+        res.json({
+            success: true,
+            cart: cart,
+            message: 'Cart updated successfully'
+        });
+        
     } catch (err) {
-        console.error('Error updating cart:', err);
-        res.status(500).json({ error: 'Server error', details: err.message });
+        console.error('=== CART UPDATE ERROR ===');
+        console.error('Error details:', err);
+        console.error('Error name:', err.name);
+        console.error('Error message:', err.message);
+        console.error('Stack trace:', err.stack);
+        
+        // Handle specific MongoDB errors
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({ 
+                error: 'Validation failed',
+                details: err.message,
+                success: false
+            });
+        }
+        
+        if (err.name === 'CastError') {
+            return res.status(400).json({ 
+                error: 'Invalid data format',
+                details: err.message,
+                success: false
+            });
+        }
+        
+        // Generic server error
+        res.status(500).json({ 
+            error: 'Internal server error',
+            message: err.message,
+            success: false
+        });
+    }
+});
+
+// Also improve the GET cart route
+app.get('/api/cart', protect, async (req, res) => {
+    try {
+        console.log('=== GET CART REQUEST ===');
+        console.log('User ID:', req.user.id);
+        
+        let cart = await Cart.findOne({ user: req.user.id });
+        
+        if (!cart) {
+            console.log('No cart found, creating new one');
+            cart = new Cart({ 
+                user: req.user.id, 
+                items: [],
+                updatedAt: new Date()
+            });
+            await cart.save();
+        }
+        
+        console.log('Cart found/created with', cart.items.length, 'items');
+        res.json({
+            success: true,
+            ...cart.toObject()
+        });
+        
+    } catch (err) {
+        console.error('=== GET CART ERROR ===');
+        console.error('Error:', err);
+        res.status(500).json({ 
+            error: 'Server error',
+            message: err.message,
+            success: false
+        });
     }
 });
  
