@@ -136,149 +136,171 @@ const protect = async (req, res, next) => {
         console.error('Auth error:', err);
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
-}; 
+};
 
 // Update Cart
+// Enhanced Update Cart Route with better error handling
 app.put('/api/cart', protect, async (req, res) => {
     try {
         console.log('=== CART UPDATE REQUEST ===');
         console.log('User ID:', req.user.id);
-        console.log('Request body:', req.body);
-        
+        console.log('Request body:', JSON.stringify(req.body, null, 2));
+
         const { items } = req.body;
-        
+
         // Validate request body
         if (!items) {
             console.log('ERROR: No items provided');
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Items are required',
-                success: false 
+                success: false,
+                received: req.body
             });
         }
-        
+
         if (!Array.isArray(items)) {
-            console.log('ERROR: Items is not an array');
-            return res.status(400).json({ 
+            console.log('ERROR: Items is not an array, received:', typeof items);
+            return res.status(400).json({
                 error: 'Items must be an array',
-                success: false 
+                success: false,
+                received: typeof items
             });
         }
-        
-        // Validate each item structure
+
+        // Validate each item structure with detailed error messages
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            if (!item.productId || !item.title || !item.artist || !item.price) {
-                console.log(`ERROR: Invalid item structure at index ${i}:`, item);
-                return res.status(400).json({ 
-                    error: `Invalid item structure at index ${i}`,
-                    success: false 
+            console.log(`Validating item ${i}:`, item);
+
+            const missingFields = [];
+            if (!item.productId) missingFields.push('productId');
+            if (!item.title) missingFields.push('title');
+            if (!item.artist) missingFields.push('artist');
+            if (item.price === undefined || item.price === null || isNaN(Number(item.price))) {
+                missingFields.push('price (must be a valid number)');
+            }
+            if (item.quantity === undefined || item.quantity === null || isNaN(Number(item.quantity))) {
+                missingFields.push('quantity (must be a valid number)');
+            }
+
+            if (missingFields.length > 0) {
+                console.log(`ERROR: Item ${i} missing/invalid fields:`, missingFields);
+                return res.status(400).json({
+                    error: `Item at index ${i} is missing or has invalid fields: ${missingFields.join(', ')}`,
+                    success: false,
+                    item: item,
+                    missingFields: missingFields
                 });
             }
+
+            // Ensure numeric fields are properly typed
+            items[i].price = Number(item.price);
+            items[i].quantity = Number(item.quantity);
         }
-        
-        console.log('All validations passed. Updating cart...');
-        
+
+        console.log('All validations passed. Processed items:', items);
+
         // Check if user exists
         const userExists = await User.findById(req.user.id);
         if (!userExists) {
             console.log('ERROR: User not found');
-            return res.status(404).json({ 
+            return res.status(404).json({
                 error: 'User not found',
-                success: false 
+                success: false
             });
         }
-        
+
         // Update or create cart
         const cart = await Cart.findOneAndUpdate(
             { user: req.user.id },
-            { 
+            {
                 items: items,
                 updatedAt: new Date()
             },
-            { 
-                new: true, 
+            {
+                new: true,
                 upsert: true,  // Create if doesn't exist
                 runValidators: true  // Run schema validations
             }
         );
-        
+
         console.log('Cart updated successfully:', cart._id);
         console.log('Items count:', cart.items.length);
-        
+
         res.json({
             success: true,
             cart: cart,
             message: 'Cart updated successfully'
         });
-        
+
     } catch (err) {
         console.error('=== CART UPDATE ERROR ===');
         console.error('Error details:', err);
         console.error('Error name:', err.name);
         console.error('Error message:', err.message);
-        console.error('Stack trace:', err.stack);
-        
+
         // Handle specific MongoDB errors
         if (err.name === 'ValidationError') {
-            return res.status(400).json({ 
+            console.error('Validation error details:', err.errors);
+            return res.status(400).json({
                 error: 'Validation failed',
                 details: err.message,
+                validationErrors: err.errors,
                 success: false
             });
         }
-        
+
         if (err.name === 'CastError') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Invalid data format',
                 details: err.message,
                 success: false
             });
         }
-        
+
         // Generic server error
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Internal server error',
             message: err.message,
             success: false
         });
     }
 });
-
 // Also improve the GET cart route
 app.get('/api/cart', protect, async (req, res) => {
     try {
         console.log('=== GET CART REQUEST ===');
         console.log('User ID:', req.user.id);
-        
+
         let cart = await Cart.findOne({ user: req.user.id });
-        
+
         if (!cart) {
             console.log('No cart found, creating new one');
-            cart = new Cart({ 
-                user: req.user.id, 
+            cart = new Cart({
+                user: req.user.id,
                 items: [],
                 updatedAt: new Date()
             });
             await cart.save();
         }
-        
+
         console.log('Cart found/created with', cart.items.length, 'items');
         res.json({
             success: true,
             ...cart.toObject()
         });
-        
+
     } catch (err) {
         console.error('=== GET CART ERROR ===');
         console.error('Error:', err);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Server error',
             message: err.message,
             success: false
         });
     }
 });
- 
+
 app.delete('/api/cart', protect, async (req, res) => {
     try {
         const cart = await Cart.findOneAndUpdate(
