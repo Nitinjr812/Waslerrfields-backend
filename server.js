@@ -5,6 +5,9 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { check, validationResult } = require('express-validator');
+const cloudinary = require('cloudinary').v2;
+const multer = require('multer');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
 // Initialize app
 const app = express();
@@ -41,7 +44,27 @@ app.use(cors({
     optionsSuccessStatus: 200,
     maxAge: 86400 // 24 hours
 }));
+// Cloudinary Configuration
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'doq149mnz',
+    api_key: process.env.CLOUDINARY_API_KEY || '399899799747386',
+    api_secret: process.env.CLOUDINARY_API_SECRET || 'PfLf-Vo-X-EWBl5Ck3el4zZR6Mg'
+});
 
+// Multer Cloudinary Storage
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'waslerr_uploads',
+        allowedFormats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+        transformation: [{ width: 800, height: 600, crop: 'limit' }]
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 // Standard payload limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
@@ -111,6 +134,28 @@ const cartSchema = new mongoose.Schema({
 const Cart = mongoose.model('Cart', cartSchema);
 
 
+
+// Product Model
+const productSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    versions: [{
+        name: { type: String, required: true },
+        price: { type: Number, required: true },
+        features: [String]
+    }],
+    images: [{
+        url: { type: String, required: true },
+        publicId: { type: String, required: true }
+    }],
+    artist: { type: String, required: true },
+    category: { type: String, default: 'general' },
+    isActive: { type: Boolean, default: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
+}, { timestamps: true });
+
+const Product = mongoose.model('Product', productSchema);
+
 // Auth Middleware
 const protect = async (req, res, next) => {
     let token;
@@ -136,7 +181,7 @@ const protect = async (req, res, next) => {
         console.error('Auth error:', err);
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
-}; 
+};
 
 // Update Cart
 // Enhanced Update Cart Route with better error handling
@@ -145,33 +190,33 @@ app.put('/api/cart', protect, async (req, res) => {
         console.log('=== CART UPDATE REQUEST ===');
         console.log('User ID:', req.user.id);
         console.log('Request body:', JSON.stringify(req.body, null, 2));
-        
+
         const { items } = req.body;
-        
+
         // Validate request body
         if (!items) {
             console.log('ERROR: No items provided');
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Items are required',
                 success: false,
                 received: req.body
             });
         }
-        
+
         if (!Array.isArray(items)) {
             console.log('ERROR: Items is not an array, received:', typeof items);
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Items must be an array',
                 success: false,
                 received: typeof items
             });
         }
-        
+
         // Validate each item structure with detailed error messages
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             console.log(`Validating item ${i}:`, item);
-            
+
             const missingFields = [];
             if (!item.productId) missingFields.push('productId');
             if (!item.title) missingFields.push('title');
@@ -182,84 +227,84 @@ app.put('/api/cart', protect, async (req, res) => {
             if (item.quantity === undefined || item.quantity === null || isNaN(Number(item.quantity))) {
                 missingFields.push('quantity (must be a valid number)');
             }
-            
+
             if (missingFields.length > 0) {
                 console.log(`ERROR: Item ${i} missing/invalid fields:`, missingFields);
-                return res.status(400).json({ 
+                return res.status(400).json({
                     error: `Item at index ${i} is missing or has invalid fields: ${missingFields.join(', ')}`,
                     success: false,
                     item: item,
                     missingFields: missingFields
                 });
             }
-            
+
             // Ensure numeric fields are properly typed
             items[i].price = Number(item.price);
             items[i].quantity = Number(item.quantity);
         }
-        
+
         console.log('All validations passed. Processed items:', items);
-        
+
         // Check if user exists
         const userExists = await User.findById(req.user.id);
         if (!userExists) {
             console.log('ERROR: User not found');
-            return res.status(404).json({ 
+            return res.status(404).json({
                 error: 'User not found',
-                success: false 
+                success: false
             });
         }
-        
+
         // Update or create cart
         const cart = await Cart.findOneAndUpdate(
             { user: req.user.id },
-            { 
+            {
                 items: items,
                 updatedAt: new Date()
             },
-            { 
-                new: true, 
+            {
+                new: true,
                 upsert: true,  // Create if doesn't exist
                 runValidators: true  // Run schema validations
             }
         );
-        
+
         console.log('Cart updated successfully:', cart._id);
         console.log('Items count:', cart.items.length);
-        
+
         res.json({
             success: true,
             cart: cart,
             message: 'Cart updated successfully'
         });
-        
+
     } catch (err) {
         console.error('=== CART UPDATE ERROR ===');
         console.error('Error details:', err);
         console.error('Error name:', err.name);
         console.error('Error message:', err.message);
-        
+
         // Handle specific MongoDB errors
         if (err.name === 'ValidationError') {
             console.error('Validation error details:', err.errors);
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Validation failed',
                 details: err.message,
                 validationErrors: err.errors,
                 success: false
             });
         }
-        
+
         if (err.name === 'CastError') {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Invalid data format',
                 details: err.message,
                 success: false
             });
         }
-        
+
         // Generic server error
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Internal server error',
             message: err.message,
             success: false
@@ -271,36 +316,36 @@ app.get('/api/cart', protect, async (req, res) => {
     try {
         console.log('=== GET CART REQUEST ===');
         console.log('User ID:', req.user.id);
-        
+
         let cart = await Cart.findOne({ user: req.user.id });
-        
+
         if (!cart) {
             console.log('No cart found, creating new one');
-            cart = new Cart({ 
-                user: req.user.id, 
+            cart = new Cart({
+                user: req.user.id,
                 items: [],
                 updatedAt: new Date()
             });
             await cart.save();
         }
-        
+
         console.log('Cart found/created with', cart.items.length, 'items');
         res.json({
             success: true,
             ...cart.toObject()
         });
-        
+
     } catch (err) {
         console.error('=== GET CART ERROR ===');
         console.error('Error:', err);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Server error',
             message: err.message,
             success: false
         });
     }
 });
- 
+
 app.delete('/api/cart', protect, async (req, res) => {
     try {
         const cart = await Cart.findOneAndUpdate(
@@ -399,6 +444,339 @@ app.get('/api/auth/me', protect, async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// Product CRUD Routes
+
+// Create Product with Images
+app.post('/api/products', protect, upload.array('images', 5), async (req, res) => {
+    try {
+        console.log('=== CREATE PRODUCT REQUEST ===');
+        console.log('User ID:', req.user.id);
+        console.log('Body:', req.body);
+        console.log('Files:', req.files);
+
+        const { title, description, versions, artist, category } = req.body;
+
+        // Validate required fields
+        if (!title || !description || !artist) {
+            return res.status(400).json({
+                success: false,
+                error: 'Title, description, and artist are required'
+            });
+        }
+
+        // Parse versions if it's a string
+        let parsedVersions = [];
+        if (versions) {
+            try {
+                parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
+            } catch (err) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid versions format'
+                });
+            }
+        }
+
+        // Process uploaded images
+        const images = req.files ? req.files.map(file => ({
+            url: file.path,
+            publicId: file.filename
+        })) : [];
+
+        const product = new Product({
+            title,
+            description,
+            versions: parsedVersions,
+            images,
+            artist,
+            category: category || 'general',
+            createdBy: req.user.id
+        });
+
+        await product.save();
+
+        console.log('Product created successfully:', product._id);
+
+        res.status(201).json({
+            success: true,
+            product,
+            message: 'Product created successfully'
+        });
+
+    } catch (err) {
+        console.error('=== CREATE PRODUCT ERROR ===');
+        console.error('Error:', err);
+
+        // If there were uploaded files, clean them up
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                try {
+                    await cloudinary.uploader.destroy(file.filename);
+                } catch (cleanupErr) {
+                    console.error('Cleanup error:', cleanupErr);
+                }
+            }
+        }
+
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
+});
+
+// Get All Products (Public)
+app.get('/api/products', async (req, res) => {
+    try {
+        const { page = 1, limit = 10, category, search } = req.query;
+        
+        const query = { isActive: true };
+        
+        if (category && category !== 'all') {
+            query.category = category;
+        }
+        
+        if (search) {
+            query.$or = [
+                { title: { $regex: search, $options: 'i' } },
+                { description: { $regex: search, $options: 'i' } },
+                { artist: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const products = await Product.find(query)
+            .populate('createdBy', 'name email')
+            .sort({ createdAt: -1 })
+            .limit(limit * 1)
+            .skip((page - 1) * limit);
+
+        const total = await Product.countDocuments(query);
+
+        res.json({
+            success: true,
+            products,
+            totalPages: Math.ceil(total / limit),
+            currentPage: page,
+            total
+        });
+
+    } catch (err) {
+        console.error('Get products error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
+});
+
+// Get Single Product (Public)
+app.get('/api/products/:id', async (req, res) => {
+    try {
+        const product = await Product.findOne({ 
+            _id: req.params.id, 
+            isActive: true 
+        }).populate('createdBy', 'name email');
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            product
+        });
+
+    } catch (err) {
+        console.error('Get product error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
+});
+
+// Update Product (Protected)
+app.put('/api/products/:id', protect, upload.array('newImages', 5), async (req, res) => {
+    try {
+        console.log('=== UPDATE PRODUCT REQUEST ===');
+        console.log('Product ID:', req.params.id);
+        console.log('User ID:', req.user.id);
+        console.log('Body:', req.body);
+        console.log('New Files:', req.files);
+
+        const product = await Product.findById(req.params.id);
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+        }
+
+        // Check if user owns the product or is admin
+        if (product.createdBy.toString() !== req.user.id && req.user.role !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                error: 'Not authorized to update this product'
+            });
+        }
+
+        const { title, description, versions, artist, category, removeImages } = req.body;
+
+        // Parse versions if provided
+        let parsedVersions = product.versions;
+        if (versions) {
+            try {
+                parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
+            } catch (err) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid versions format'
+                });
+            }
+        }
+
+        // Handle image removal
+        if (removeImages) {
+            const imagesToRemove = typeof removeImages === 'string' ? JSON.parse(removeImages) : removeImages;
+            for (const publicId of imagesToRemove) {
+                try {
+                    await cloudinary.uploader.destroy(publicId);
+                    product.images = product.images.filter(img => img.publicId !== publicId);
+                } catch (err) {
+                    console.error('Error removing image:', err);
+                }
+            }
+        }
+
+        // Add new images
+        if (req.files && req.files.length > 0) {
+            const newImages = req.files.map(file => ({
+                url: file.path,
+                publicId: file.filename
+            }));
+            product.images.push(...newImages);
+        }
+
+        // Update fields
+        if (title) product.title = title;
+        if (description) product.description = description;
+        if (versions) product.versions = parsedVersions;
+        if (artist) product.artist = artist;
+        if (category) product.category = category;
+
+        await product.save();
+
+        console.log('Product updated successfully:', product._id);
+
+        res.json({
+            success: true,
+            product,
+            message: 'Product updated successfully'
+        });
+
+    } catch (err) {
+        console.error('=== UPDATE PRODUCT ERROR ===');
+        console.error('Error:', err);
+
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
+});
+
+// Delete Product (Protected)
+app.delete('/api/products/:id', protect, async (req, res) => {
+    try {
+        console.log('=== DELETE PRODUCT REQUEST ===');
+        console.log('Product ID:', req.params.id);
+        console.log('User ID:', req.user.id);
+
+        const product = await Product.findById(req.params.id);
+
+        if (!product) {
+            return res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+        }
+
+        // Check if user owns the product or is admin
+        if (product.createdBy.toString() !== req.user.id && req.user.role !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                error: 'Not authorized to delete this product'
+            });
+        }
+
+        // Delete images from Cloudinary
+        for (const image of product.images) {
+            try {
+                await cloudinary.uploader.destroy(image.publicId);
+            } catch (err) {
+                console.error('Error deleting image from Cloudinary:', err);
+            }
+        }
+
+        await Product.findByIdAndDelete(req.params.id);
+
+        console.log('Product deleted successfully:', req.params.id);
+
+        res.json({
+            success: true,
+            message: 'Product deleted successfully'
+        });
+
+    } catch (err) {
+        console.error('=== DELETE PRODUCT ERROR ===');
+        console.error('Error:', err);
+
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
+});
+
+// Get Products by User (Protected)
+app.get('/api/products/user/me', protect, async (req, res) => {
+    try {
+        const { page = 1, limit = 10 } = req.query;
+
+        const products = await Product.find({ createdBy: req.user.id })
+            .sort({ createdAt: -1 })
+            .limit(limit * 1)
+            .skip((page - 1) * limit);
+
+        const total = await Product.countDocuments({ createdBy: req.user.id });
+
+        res.json({
+            success: true,
+            products,
+            totalPages: Math.ceil(total / limit),
+            currentPage: page,
+            total
+        });
+
+    } catch (err) {
+        console.error('Get user products error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
     }
 });
 
