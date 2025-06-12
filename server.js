@@ -110,29 +110,6 @@ const cartSchema = new mongoose.Schema({
 
 const Cart = mongoose.model('Cart', cartSchema);
 
-// Add this after your existing schemas and before your existing routes
-
-// Product Model
-const productSchema = new mongoose.Schema({
-    title: { type: String, required: true },
-    artist: { type: String, required: true },
-    description: { type: String, required: true },
-    price: { type: Number, required: true },
-    image: { type: String, required: true },
-    versions: [{
-        versionName: { type: String, required: true }, // e.g., "Standard", "Deluxe", "Premium"
-        price: { type: Number, required: true },
-        description: { type: String },
-        image: { type: String }
-    }],
-    category: { type: String, default: 'music' },
-    isActive: { type: Boolean, default: true }
-}, { timestamps: true });
-
-const Product = mongoose.model('Product', productSchema);
-
-
-
 
 // Auth Middleware
 const protect = async (req, res, next) => {
@@ -159,7 +136,7 @@ const protect = async (req, res, next) => {
         console.error('Auth error:', err);
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
-};
+}; 
 
 // Update Cart
 // Enhanced Update Cart Route with better error handling
@@ -168,33 +145,33 @@ app.put('/api/cart', protect, async (req, res) => {
         console.log('=== CART UPDATE REQUEST ===');
         console.log('User ID:', req.user.id);
         console.log('Request body:', JSON.stringify(req.body, null, 2));
-
+        
         const { items } = req.body;
-
+        
         // Validate request body
         if (!items) {
             console.log('ERROR: No items provided');
-            return res.status(400).json({
+            return res.status(400).json({ 
                 error: 'Items are required',
                 success: false,
                 received: req.body
             });
         }
-
+        
         if (!Array.isArray(items)) {
             console.log('ERROR: Items is not an array, received:', typeof items);
-            return res.status(400).json({
+            return res.status(400).json({ 
                 error: 'Items must be an array',
                 success: false,
                 received: typeof items
             });
         }
-
+        
         // Validate each item structure with detailed error messages
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             console.log(`Validating item ${i}:`, item);
-
+            
             const missingFields = [];
             if (!item.productId) missingFields.push('productId');
             if (!item.title) missingFields.push('title');
@@ -205,125 +182,125 @@ app.put('/api/cart', protect, async (req, res) => {
             if (item.quantity === undefined || item.quantity === null || isNaN(Number(item.quantity))) {
                 missingFields.push('quantity (must be a valid number)');
             }
-
+            
             if (missingFields.length > 0) {
                 console.log(`ERROR: Item ${i} missing/invalid fields:`, missingFields);
-                return res.status(400).json({
+                return res.status(400).json({ 
                     error: `Item at index ${i} is missing or has invalid fields: ${missingFields.join(', ')}`,
                     success: false,
                     item: item,
                     missingFields: missingFields
                 });
             }
-
+            
             // Ensure numeric fields are properly typed
             items[i].price = Number(item.price);
             items[i].quantity = Number(item.quantity);
         }
-
+        
         console.log('All validations passed. Processed items:', items);
-
+        
         // Check if user exists
         const userExists = await User.findById(req.user.id);
         if (!userExists) {
             console.log('ERROR: User not found');
-            return res.status(404).json({
+            return res.status(404).json({ 
                 error: 'User not found',
-                success: false
+                success: false 
             });
         }
-
+        
         // Update or create cart
         const cart = await Cart.findOneAndUpdate(
             { user: req.user.id },
-            {
+            { 
                 items: items,
                 updatedAt: new Date()
             },
-            {
-                new: true,
+            { 
+                new: true, 
                 upsert: true,  // Create if doesn't exist
                 runValidators: true  // Run schema validations
             }
         );
-
+        
         console.log('Cart updated successfully:', cart._id);
         console.log('Items count:', cart.items.length);
-
+        
         res.json({
             success: true,
             cart: cart,
             message: 'Cart updated successfully'
         });
-
+        
     } catch (err) {
         console.error('=== CART UPDATE ERROR ===');
         console.error('Error details:', err);
         console.error('Error name:', err.name);
         console.error('Error message:', err.message);
-
+        
         // Handle specific MongoDB errors
         if (err.name === 'ValidationError') {
             console.error('Validation error details:', err.errors);
-            return res.status(400).json({
+            return res.status(400).json({ 
                 error: 'Validation failed',
                 details: err.message,
                 validationErrors: err.errors,
                 success: false
             });
         }
-
+        
         if (err.name === 'CastError') {
-            return res.status(400).json({
+            return res.status(400).json({ 
                 error: 'Invalid data format',
                 details: err.message,
                 success: false
             });
         }
-
+        
         // Generic server error
-        res.status(500).json({
+        res.status(500).json({ 
             error: 'Internal server error',
             message: err.message,
             success: false
         });
     }
 });
-
+// Also improve the GET cart route
 app.get('/api/cart', protect, async (req, res) => {
     try {
         console.log('=== GET CART REQUEST ===');
         console.log('User ID:', req.user.id);
-
+        
         let cart = await Cart.findOne({ user: req.user.id });
-
+        
         if (!cart) {
             console.log('No cart found, creating new one');
-            cart = new Cart({
-                user: req.user.id,
+            cart = new Cart({ 
+                user: req.user.id, 
                 items: [],
                 updatedAt: new Date()
             });
             await cart.save();
         }
-
+        
         console.log('Cart found/created with', cart.items.length, 'items');
         res.json({
             success: true,
             ...cart.toObject()
         });
-
+        
     } catch (err) {
         console.error('=== GET CART ERROR ===');
         console.error('Error:', err);
-        res.status(500).json({
+        res.status(500).json({ 
             error: 'Server error',
             message: err.message,
             success: false
         });
     }
 });
-
+ 
 app.delete('/api/cart', protect, async (req, res) => {
     try {
         const cart = await Cart.findOneAndUpdate(
@@ -424,231 +401,6 @@ app.get('/api/auth/me', protect, async (req, res) => {
         res.status(500).json({ error: 'Server error' });
     }
 });
-
-// Add these routes after your existing auth routes
-
-// Get all products (public route)
-app.get('/api/products', async (req, res) => {
-    try {
-        const products = await Product.find({ isActive: true }).sort({ createdAt: -1 });
-        res.json({
-            success: true,
-            products: products
-        });
-    } catch (err) {
-        console.error('Get products error:', err);
-        res.status(500).json({
-            error: 'Server error',
-            message: err.message,
-            success: false
-        });
-    }
-});
-
-// Get single product
-app.get('/api/products/:id', async (req, res) => {
-    try {
-        const product = await Product.findById(req.params.id);
-        if (!product) {
-            return res.status(404).json({
-                success: false,
-                message: 'Product not found'
-            });
-        }
-        res.json({
-            success: true,
-            product: product
-        });
-    } catch (err) {
-        console.error('Get product error:', err);
-        res.status(500).json({
-            error: 'Server error',
-            message: err.message,
-            success: false
-        });
-    }
-});
-
-// Create new product (admin route - no auth needed as per request)
-app.post('/api/admin/products', async (req, res) => {
-    try {
-        console.log('=== CREATE PRODUCT REQUEST ===');
-        console.log('Request body:', JSON.stringify(req.body, null, 2));
-
-        const { title, artist, description, price, image, versions } = req.body;
-
-        // Validate required fields
-        const missingFields = [];
-        if (!title) missingFields.push('title');
-        if (!artist) missingFields.push('artist');
-        if (!description) missingFields.push('description');
-        if (!price && price !== 0) missingFields.push('price');
-        if (!image) missingFields.push('image');
-
-        if (missingFields.length > 0) {
-            return res.status(400).json({
-                success: false,
-                error: `Missing required fields: ${missingFields.join(', ')}`,
-                missingFields: missingFields
-            });
-        }
-
-        // Validate price
-        if (isNaN(Number(price))) {
-            return res.status(400).json({
-                success: false,
-                error: 'Price must be a valid number'
-            });
-        }
-
-        // Validate versions if provided
-        if (versions && Array.isArray(versions)) {
-            for (let i = 0; i < versions.length; i++) {
-                const version = versions[i];
-                if (!version.versionName || !version.price) {
-                    return res.status(400).json({
-                        success: false,
-                        error: `Version ${i + 1} must have versionName and price`
-                    });
-                }
-                if (isNaN(Number(version.price))) {
-                    return res.status(400).json({
-                        success: false,
-                        error: `Version ${i + 1} price must be a valid number`
-                    });
-                }
-            }
-        }
-
-        const productData = {
-            title,
-            artist,
-            description,
-            price: Number(price),
-            image,
-            versions: versions || []
-        };
-
-        const product = new Product(productData);
-        await product.save();
-
-        console.log('Product created successfully:', product._id);
-
-        res.status(201).json({
-            success: true,
-            product: product,
-            message: 'Product created successfully'
-        });
-
-    } catch (err) {
-        console.error('=== CREATE PRODUCT ERROR ===');
-        console.error('Error:', err);
-
-        if (err.name === 'ValidationError') {
-            return res.status(400).json({
-                success: false,
-                error: 'Validation failed',
-                details: err.message
-            });
-        }
-
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            message: err.message
-        });
-    }
-});
-
-// Update product
-app.put('/api/admin/products/:id', async (req, res) => {
-    try {
-        const { title, artist, description, price, image, versions, isActive } = req.body;
-
-        const updateData = {};
-        if (title) updateData.title = title;
-        if (artist) updateData.artist = artist;
-        if (description) updateData.description = description;
-        if (price !== undefined) updateData.price = Number(price);
-        if (image) updateData.image = image;
-        if (versions !== undefined) updateData.versions = versions;
-        if (isActive !== undefined) updateData.isActive = isActive;
-
-        const product = await Product.findByIdAndUpdate(
-            req.params.id,
-            updateData,
-            { new: true, runValidators: true }
-        );
-
-        if (!product) {
-            return res.status(404).json({
-                success: false,
-                message: 'Product not found'
-            });
-        }
-
-        res.json({
-            success: true,
-            product: product,
-            message: 'Product updated successfully'
-        });
-
-    } catch (err) {
-        console.error('Update product error:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            message: err.message
-        });
-    }
-});
-
-// Delete product
-app.delete('/api/admin/products/:id', async (req, res) => {
-    try {
-        const product = await Product.findByIdAndDelete(req.params.id);
-
-        if (!product) {
-            return res.status(404).json({
-                success: false,
-                message: 'Product not found'
-            });
-        }
-
-        res.json({
-            success: true,
-            message: 'Product deleted successfully'
-        });
-
-    } catch (err) {
-        console.error('Delete product error:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            message: err.message
-        });
-    }
-});
-
-// Get all products for admin (includes inactive)
-app.get('/api/admin/products', async (req, res) => {
-    try {
-        const products = await Product.find().sort({ createdAt: -1 });
-        res.json({
-            success: true,
-            products: products
-        });
-    } catch (err) {
-        console.error('Get admin products error:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            message: err.message
-        });
-    }
-});
-
-
 
 // Basic route
 app.get("/", (req, res) => {
