@@ -46,9 +46,9 @@ app.use(cors({
 }));
 // Cloudinary Configuration
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'doq149mnz',
-    api_key: process.env.CLOUDINARY_API_KEY || '399899799747386',
-    api_secret: process.env.CLOUDINARY_API_SECRET || 'PfLf-Vo-X-EWBl5Ck3el4zZR6Mg'
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME  ,
+    api_key: process.env.CLOUDINARY_API_KEY  ,
+    api_secret: process.env.CLOUDINARY_API_SECRET  
 });
 
 // Multer Cloudinary Storage
