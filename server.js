@@ -8,8 +8,7 @@ const { check, validationResult } = require('express-validator');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const axios = require('axios');
-const nodemailer = require('nodemailer'); // Add this for email
+
 
 // Initialize app
 const app = express();
@@ -17,13 +16,17 @@ const app = express();
 // Enhanced CORS configuration
 app.use(cors({
     origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
+
         const allowedOrigins = [
             'http://localhost:5173',
             'http://localhost:3000',
             'http://127.0.0.1:5173',
             'https://your-production-frontend.com'
         ];
+
+        // For development, allow all origins
         callback(null, true);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -40,112 +43,13 @@ app.use(cors({
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 200,
-    maxAge: 86400
+    maxAge: 86400 // 24 hours
 }));
-
-// Email Configuration
-const transporter = nodemailer.createTransporter({
-    service: 'gmail', // or your preferred email service
-    auth: {
-        user: process.env.EMAIL_USER, // your email
-        pass: process.env.EMAIL_PASSWORD // your app password
-    }
-});
-
-// Email Templates
-const generateOrderEmailHTML = (order, user) => `
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
-        .container { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-align: center; padding: 30px; }
-        .content { padding: 30px; }
-        .order-item { border-bottom: 1px solid #eee; padding: 15px 0; display: flex; align-items: center; }
-        .item-image { width: 60px; height: 60px; border-radius: 8px; margin-right: 15px; background: #f0f0f0; }
-        .item-details { flex: 1; }
-        .item-title { font-weight: bold; color: #333; margin-bottom: 5px; }
-        .item-artist { color: #666; font-size: 14px; }
-        .item-price { font-weight: bold; color: #667eea; }
-        .total-section { background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }
-        .total-row { display: flex; justify-content: space-between; margin-bottom: 10px; }
-        .total-final { font-size: 18px; font-weight: bold; color: #333; border-top: 2px solid #667eea; padding-top: 10px; }
-        .footer { background: #f8f9fa; text-align: center; padding: 20px; color: #666; }
-        .btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin: 20px 0; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎵 Order Confirmation</h1>
-            <p>Thank you for your purchase!</p>
-        </div>
-        <div class="content">
-            <h2>Hi ${user.name}!</h2>
-            <p>Your order has been confirmed and payment received successfully. Here are your order details:</p>
-            
-            <div class="order-info">
-                <p><strong>Order ID:</strong> ${order._id}</p>
-                <p><strong>Order Date:</strong> ${new Date(order.createdAt).toLocaleDateString()}</p>
-                <p><strong>Payment Status:</strong> <span style="color: #28a745;">✅ Paid</span></p>
-            </div>
-
-            <h3>Order Items:</h3>
-            ${order.orderItems.map(item => `
-                <div class="order-item">
-                    ${item.image ? `<img src="${item.image}" alt="${item.title}" class="item-image">` : '<div class="item-image"></div>'}
-                    <div class="item-details">
-                        <div class="item-title">${item.title}</div>
-                        <div class="item-artist">by ${item.artist}</div>
-                        <div style="color: #666; font-size: 14px;">Quantity: ${item.quantity}</div>
-                    </div>
-                    <div class="item-price">$${(item.price * item.quantity).toFixed(2)}</div>
-                </div>
-            `).join('')}
-
-            <div class="total-section">
-                <div class="total-row total-final">
-                    <span>Total Amount:</span>
-                    <span>$${order.totalPrice.toFixed(2)}</span>
-                </div>
-            </div>
-
-            <p>You will receive download links shortly. If you have any questions, please don't hesitate to contact us.</p>
-            
-            <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/orders/${order._id}" class="btn">View Order Details</a>
-        </div>
-        <div class="footer">
-            <p>Thank you for choosing our music store! 🎶</p>
-            <p>Keep the music alive!</p>
-        </div>
-    </div>
-</body>
-</html>
-`;
-
-// Send Order Confirmation Email
-const sendOrderConfirmationEmail = async (order, user) => {
-    try {
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: user.email,
-            subject: `🎵 Order Confirmation - ${order._id}`,
-            html: generateOrderEmailHTML(order, user)
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log('Order confirmation email sent successfully');
-    } catch (error) {
-        console.error('Error sending email:', error);
-    }
-};
-
 // Cloudinary Configuration
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME  ,
+    api_key: process.env.CLOUDINARY_API_KEY  ,
+    api_secret: process.env.CLOUDINARY_API_SECRET  
 });
 
 // Multer Cloudinary Storage
@@ -160,18 +64,20 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
-
+// Standard payload limits
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
+// Set timeout for requests
 app.use((req, res, next) => {
-    req.setTimeout(30000);
-    res.setTimeout(30000);
+    req.setTimeout(30000); // 30 seconds
+    res.setTimeout(30000); // 30 seconds
     next();
 });
 
+// Enhanced CORS headers middleware - MUST be before routes
 app.use((req, res, next) => {
     const origin = req.headers.origin;
     res.header('Access-Control-Allow-Origin', origin || '*');
@@ -180,13 +86,14 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Max-Age', '86400');
 
+    // Handle preflight requests
     if (req.method === 'OPTIONS') {
         return res.sendStatus(200);
     }
     next();
 });
 
-// MongoDB Connection
+// MongoDB Connection with optimized settings
 mongoose.connect(process.env.MONGO_URI, {
     maxPoolSize: 10,
     serverSelectionTimeoutMS: 5000,
@@ -195,7 +102,7 @@ mongoose.connect(process.env.MONGO_URI, {
     .then(() => console.log('MongoDB Connected'))
     .catch(err => console.log('MongoDB Error:', err));
 
-// Schemas (same as before)
+// User Model
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true },
@@ -211,6 +118,7 @@ userSchema.pre('save', async function (next) {
 
 const User = mongoose.model('User', userSchema);
 
+// Cart Model
 const cartSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     items: [{
@@ -226,6 +134,9 @@ const cartSchema = new mongoose.Schema({
 
 const Cart = mongoose.model('Cart', cartSchema);
 
+
+
+// Product Model
 const productSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, required: true },
@@ -246,286 +157,33 @@ const productSchema = new mongoose.Schema({
 
 const Product = mongoose.model('Product', productSchema);
 
-const orderSchema = new mongoose.Schema({
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    orderItems: [{
-        productId: { type: String, required: true },
-        title: { type: String, required: true },
-        artist: { type: String, required: true },
-        price: { type: Number, required: true },
-        quantity: { type: Number, required: true },
-        image: { type: String }
-    }],
-    paymentResult: {
-        id: { type: String },
-        status: { type: String },
-        update_time: { type: String },
-        email_address: { type: String }
-    },
-    totalPrice: { type: Number, required: true, default: 0.0 },
-    isPaid: { type: Boolean, required: true, default: false },
-    paidAt: { type: Date },
-    orderStatus: {
-        type: String,
-        enum: ['pending', 'processing', 'completed', 'cancelled'],
-        default: 'pending'
-    }
-}, { timestamps: true });
-
-const Order = mongoose.model('Order', orderSchema);
-
 // Auth Middleware
 const protect = async (req, res, next) => {
+    let token;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
+    } else if (req.header('x-auth-token')) {
+        token = req.header('x-auth-token');
+    }
+
+    if (!token) {
+        return res.status(401).json({ success: false, message: 'Not authorized, no token' });
+    }
+
     try {
-        let token;
-        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-        } else if (req.headers['x-auth-token']) {
-            token = req.headers['x-auth-token'];
-        }
-
-        if (!token) {
-            return res.status(401).json({ success: false, error: 'No token, authorization denied' });
-        }
-
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.id);
+        req.user = await User.findById(decoded.user.id);
+        if (!req.user) {
+            return res.status(401).json({ success: false, message: 'User not found' });
+        }
         next();
-    } catch (error) {
-        res.status(401).json({ success: false, error: 'Token is not valid' });
+    } catch (err) {
+        console.error('Auth error:', err);
+        return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
 };
 
-// PayPal Configuration
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
-const PAYPAL_API = PAYPAL_MODE === 'sandbox'
-    ? 'https://api-m.sandbox.paypal.com'
-    : 'https://api-m.paypal.com';
-
-const getPayPalAccessToken = async () => {
-    try {
-        const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-        const response = await axios({
-            method: 'POST',
-            url: `${PAYPAL_API}/v1/oauth2/token`,
-            headers: {
-                'Accept': 'application/json',
-                'Accept-Language': 'en_US',
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            data: 'grant_type=client_credentials'
-        });
-        return response.data.access_token;
-    } catch (error) {
-        console.error('Error getting PayPal access token:', error.response?.data || error.message);
-        throw new Error('Failed to get PayPal access token');
-    }
-};
-
-// Routes
-app.get('/api/config/paypal', (req, res) => {
-    res.json({
-        clientId: PAYPAL_CLIENT_ID,
-        mode: PAYPAL_MODE
-    });
-});
-
-app.post('/api/orders/create-paypal-order', protect, async (req, res) => {
-    try {
-        console.log('=== CREATE PAYPAL ORDER ===');
-        const { items, totalPrice } = req.body;
-
-        if (!items || !Array.isArray(items) || items.length === 0) {
-            return res.status(400).json({ success: false, error: 'Order items are required' });
-        }
-
-        if (!totalPrice || totalPrice <= 0) {
-            return res.status(400).json({ success: false, error: 'Valid total price is required' });
-        }
-
-        const accessToken = await getPayPalAccessToken();
-
-        const paypalOrder = {
-            intent: 'CAPTURE',
-            purchase_units: [{
-                amount: {
-                    currency_code: 'USD',
-                    value: totalPrice.toFixed(2)
-                },
-                description: `Music Store Purchase - ${items.length} item(s)`
-            }],
-            application_context: {
-                return_url: `${req.protocol}://${req.get('host')}/api/orders/paypal-success`,
-                cancel_url: `${req.protocol}://${req.get('host')}/api/orders/paypal-cancel`,
-                shipping_preference: 'NO_SHIPPING',
-                user_action: 'PAY_NOW'
-            }
-        };
-
-        const response = await axios({
-            method: 'POST',
-            url: `${PAYPAL_API}/v2/checkout/orders`,
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`,
-                'PayPal-Request-Id': `${Date.now()}-${req.user.id}`
-            },
-            data: paypalOrder
-        });
-
-        const order = new Order({
-            user: req.user.id,
-            orderItems: items,
-            totalPrice: totalPrice,
-            paymentResult: {
-                id: response.data.id,
-                status: 'CREATED'
-            }
-        });
-
-        await order.save();
-
-        res.json({
-            success: true,
-            orderId: response.data.id,
-            dbOrderId: order._id,
-            approvalUrl: response.data.links.find(link => link.rel === 'approve')?.href
-        });
-
-    } catch (error) {
-        console.error('=== CREATE PAYPAL ORDER ERROR ===');
-        res.status(500).json({
-            success: false,
-            error: 'Failed to create PayPal order',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-app.post('/api/orders/capture-paypal-order', protect, async (req, res) => {
-    try {
-        console.log('=== CAPTURE PAYPAL ORDER ===');
-        const { orderID } = req.body;
-
-        if (!orderID) {
-            return res.status(400).json({ success: false, error: 'PayPal Order ID is required' });
-        }
-
-        const accessToken = await getPayPalAccessToken();
-
-        const response = await axios({
-            method: 'POST',
-            url: `${PAYPAL_API}/v2/checkout/orders/${orderID}/capture`,
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`
-            }
-        });
-
-        const order = await Order.findOne({
-            'paymentResult.id': orderID,
-            user: req.user.id
-        });
-
-        if (!order) {
-            return res.status(404).json({ success: false, error: 'Order not found' });
-        }
-
-        const captureDetails = response.data.purchase_units[0].payments.captures[0];
-
-        if (captureDetails.status === 'COMPLETED') {
-            order.isPaid = true;
-            order.paidAt = new Date();
-            order.orderStatus = 'completed';
-            order.paymentResult = {
-                id: orderID,
-                status: captureDetails.status,
-                update_time: captureDetails.update_time,
-                email_address: response.data.payer.email_address
-            };
-
-            await order.save();
-
-            // Clear user's cart
-            await Cart.findOneAndUpdate(
-                { user: req.user.id },
-                { items: [] }
-            );
-
-            // Send confirmation email
-            await sendOrderConfirmationEmail(order, req.user);
-
-            res.json({
-                success: true,
-                message: 'Payment captured successfully',
-                order: order,
-                paymentDetails: response.data
-            });
-        } else {
-            res.status(400).json({
-                success: false,
-                error: 'Payment was not completed',
-                status: captureDetails.status
-            });
-        }
-
-    } catch (error) {
-        console.error('=== CAPTURE PAYPAL ORDER ERROR ===');
-        res.status(500).json({
-            success: false,
-            error: 'Failed to capture PayPal payment',
-            details: error.response?.data || error.message
-        });
-    }
-});
-
-app.get('/api/orders/my-orders', protect, async (req, res) => {
-    try {
-        const orders = await Order.find({ user: req.user.id })
-            .sort({ createdAt: -1 })
-            .populate('user', 'name email');
-
-        res.json({ success: true, orders });
-    } catch (error) {
-        console.error('Get orders error:', error);
-        res.status(500).json({ success: false, error: 'Failed to fetch orders' });
-    }
-});
-
-app.get('/api/orders/:id', protect, async (req, res) => {
-    try {
-        const order = await Order.findById(req.params.id)
-            .populate('user', 'name email');
-
-        if (!order) {
-            return res.status(404).json({ success: false, error: 'Order not found' });
-        }
-
-        if (order.user._id.toString() !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({ success: false, error: 'Not authorized to access this order' });
-        }
-
-        res.json({ success: true, order });
-    } catch (error) {
-        console.error('Get order error:', error);
-        res.status(500).json({ success: false, error: 'Failed to fetch order' });
-    }
-});
-
-app.get('/api/orders/paypal-success', (req, res) => {
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout/success?token=${req.query.token}`);
-});
-
-app.get('/api/orders/paypal-cancel', (req, res) => {
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout/cancel`);
-});
-
-
-
- 
 // Update Cart
 // Enhanced Update Cart Route with better error handling
 app.put('/api/cart', protect, async (req, res) => {
@@ -876,13 +534,13 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
 app.get('/api/products', async (req, res) => {
     try {
         const { page = 1, limit = 10, category, search } = req.query;
-
+        
         const query = { isActive: true };
-
+        
         if (category && category !== 'all') {
             query.category = category;
         }
-
+        
         if (search) {
             query.$or = [
                 { title: { $regex: search, $options: 'i' } },
@@ -920,9 +578,9 @@ app.get('/api/products', async (req, res) => {
 // Get Single Product (Public)
 app.get('/api/products/:id', async (req, res) => {
     try {
-        const product = await Product.findOne({
-            _id: req.params.id,
-            isActive: true
+        const product = await Product.findOne({ 
+            _id: req.params.id, 
+            isActive: true 
         }).populate('createdBy', 'name email');
 
         if (!product) {
