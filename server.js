@@ -47,9 +47,9 @@ app.use(cors({
 }));
 // Cloudinary Configuration
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME  ,
-    api_key: process.env.CLOUDINARY_API_KEY  ,
-    api_secret: process.env.CLOUDINARY_API_SECRET  
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
 // Multer Cloudinary Storage
@@ -134,7 +134,26 @@ const cartSchema = new mongoose.Schema({
 
 const Cart = mongoose.model('Cart', cartSchema);
 
+// Order Model
+const orderSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    items: [{
+        productId: { type: String, required: true },
+        title: { type: String, required: true },
+        artist: { type: String, required: true },
+        price: { type: Number, required: true },
+        image: { type: String },
+        quantity: { type: Number, default: 1 }
+    }],
+    totalAmount: { type: Number, required: true },
+    paypalOrderId: { type: String, required: true },
+    status: { type: String, default: 'pending', enum: ['pending', 'completed', 'failed'] },
+    paymentDetails: { type: Object },
+    shippingAddress: { type: Object },
+    createdAt: { type: Date, default: Date.now }
+});
 
+const Order = mongoose.model('Order', orderSchema);
 
 // Product Model
 const productSchema = new mongoose.Schema({
@@ -312,6 +331,250 @@ app.put('/api/cart', protect, async (req, res) => {
         });
     }
 });
+
+
+// Payment Routes
+const { client } = require('./config/paypal');
+const paypal = require('@paypal/checkout-server-sdk');
+const { sendEmail } = require('./config/nodemailer');
+
+// Create PayPal Order
+app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        const cart = await Cart.findOne({ user: req.user.id });
+
+        if (!cart || cart.items.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Cart is empty'
+            });
+        }
+
+        const total = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+        const request = new paypal.orders.OrdersCreateRequest();
+        request.prefer("return=representation");
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [{
+                amount: {
+                    currency_code: 'USD',
+                    value: total.toFixed(2),
+                    breakdown: {
+                        item_total: {
+                            currency_code: 'USD',
+                            value: total.toFixed(2)
+                        }
+                    }
+                },
+                items: cart.items.map(item => ({
+                    name: `${item.title} by ${item.artist}`,
+                    unit_amount: {
+                        currency_code: 'USD',
+                        value: item.price.toFixed(2)
+                    },
+                    quantity: item.quantity.toString(),
+                    sku: item.productId
+                }))
+            }],
+            application_context: {
+                brand_name: 'Waslerr',
+                user_action: 'PAY_NOW',
+                return_url: `${req.headers.origin}/checkout/success`,
+                cancel_url: `${req.headers.origin}/cart`
+            }
+        });
+
+        const order = await client().execute(request);
+
+        // Create order in database
+        const dbOrder = new Order({
+            user: req.user.id,
+            items: cart.items,
+            totalAmount: total,
+            paypalOrderId: order.result.id,
+            status: 'pending'
+        });
+
+        await dbOrder.save();
+
+        res.json({
+            success: true,
+            orderID: order.result.id
+        });
+
+    } catch (err) {
+        console.error('PayPal order error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create PayPal order',
+            message: err.message
+        });
+    }
+});
+
+// Capture PayPal Order
+app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
+    try {
+        const { orderID } = req.body;
+
+        if (!orderID) {
+            return res.status(400).json({
+                success: false,
+                message: 'Order ID is required'
+            });
+        }
+
+        const request = new paypal.orders.OrdersCaptureRequest(orderID);
+        request.requestBody({});
+
+        const capture = await client().execute(request);
+
+        // Update order in database
+        const updatedOrder = await Order.findOneAndUpdate(
+            { paypalOrderId: orderID, user: req.user.id },
+            {
+                status: 'completed',
+                paymentDetails: capture.result,
+                $set: { 'paymentDetails.update_time': new Date() }
+            },
+            { new: true }
+        ).populate('user', 'name email');
+
+        if (!updatedOrder) {
+            return res.status(404).json({
+                success: false,
+                message: 'Order not found'
+            });
+        }
+
+        // Clear user's cart
+        await Cart.findOneAndUpdate(
+            { user: req.user.id },
+            { items: [] }
+        );
+
+        // Send confirmation email
+        const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #4a5568;">Thank you for your order!</h2>
+        <p>Hi ${updatedOrder.user.name},</p>
+        <p>Your payment has been successfully processed. Here are your order details:</p>
+        
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <thead>
+            <tr style="background-color: #f7fafc;">
+              <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
+              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
+              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Qty</th>
+              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${updatedOrder.items.map(item => `
+              <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
+                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
+                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">${item.quantity}</td>
+                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${(item.price * item.quantity).toFixed(2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="3" style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
+              <td style="padding: 10px; text-align: right; font-weight: bold;">$${updatedOrder.totalAmount.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+        
+        <p>Order ID: ${updatedOrder._id}</p>
+        <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
+        <p>If you have any questions, please contact our support team.</p>
+        <p>Best regards,<br>The Waslerr Team</p>
+      </div>
+    `;
+
+        await sendEmail(
+            updatedOrder.user.email,
+            `Your Waslerr Order #${updatedOrder._id}`,
+            emailHtml
+        );
+
+        res.json({
+            success: true,
+            order: updatedOrder,
+            capture: capture.result
+        });
+
+    } catch (err) {
+        console.error('PayPal capture error:', err);
+
+        // Update order status to failed in database
+        await Order.findOneAndUpdate(
+            { paypalOrderId: orderID, user: req.user.id },
+            { status: 'failed' }
+        );
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to capture PayPal order',
+            message: err.message
+        });
+    }
+});
+
+// Get User Orders
+app.get('/api/orders', protect, async (req, res) => {
+    try {
+        const orders = await Order.find({ user: req.user.id })
+            .sort({ createdAt: -1 });
+
+        res.json({
+            success: true,
+            orders
+        });
+    } catch (err) {
+        console.error('Get orders error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get orders',
+            message: err.message
+        });
+    }
+});
+
+// Get Single Order
+app.get('/api/orders/:id', protect, async (req, res) => {
+    try {
+        const order = await Order.findOne({
+            _id: req.params.id,
+            user: req.user.id
+        });
+
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                message: 'Order not found'
+            });
+        }
+
+        res.json({
+            success: true,
+            order
+        });
+    } catch (err) {
+        console.error('Get order error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get order',
+            message: err.message
+        });
+    }
+});
+
+
 // Also improve the GET cart route
 app.get('/api/cart', protect, async (req, res) => {
     try {
@@ -534,13 +797,13 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
 app.get('/api/products', async (req, res) => {
     try {
         const { page = 1, limit = 10, category, search } = req.query;
-        
+
         const query = { isActive: true };
-        
+
         if (category && category !== 'all') {
             query.category = category;
         }
-        
+
         if (search) {
             query.$or = [
                 { title: { $regex: search, $options: 'i' } },
@@ -578,9 +841,9 @@ app.get('/api/products', async (req, res) => {
 // Get Single Product (Public)
 app.get('/api/products/:id', async (req, res) => {
     try {
-        const product = await Product.findOne({ 
-            _id: req.params.id, 
-            isActive: true 
+        const product = await Product.findOne({
+            _id: req.params.id,
+            isActive: true
         }).populate('createdBy', 'name email');
 
         if (!product) {
