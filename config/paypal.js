@@ -1,3 +1,4 @@
+// config/paypal.js
 const checkoutNodeJssdk = require('@paypal/checkout-server-sdk');
 
 function client() {
