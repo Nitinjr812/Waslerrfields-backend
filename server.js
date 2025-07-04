@@ -341,9 +341,16 @@ const { sendEmail } = require('./config/nodemailer');
 // Create PayPal Order
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
+        // 1. Validate user and cart
         const user = await User.findById(req.user.id);
-        const cart = await Cart.findOne({ user: req.user.id });
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
 
+        const cart = await Cart.findOne({ user: req.user.id });
         if (!cart || cart.items.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -351,8 +358,20 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        const total = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        // 2. Calculate total and validate items
+        const total = cart.items.reduce((sum, item) => {
+            const itemTotal = Number(item.price) * Number(item.quantity);
+            return sum + itemTotal;
+        }, 0);
 
+        if (total <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid order total'
+            });
+        }
+
+        // 3. Create PayPal order request
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer("return=representation");
         request.requestBody({
@@ -372,7 +391,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                     name: `${item.title} by ${item.artist}`,
                     unit_amount: {
                         currency_code: 'USD',
-                        value: item.price.toFixed(2)
+                        value: Number(item.price).toFixed(2)
                     },
                     quantity: item.quantity.toString(),
                     sku: item.productId
@@ -382,35 +401,71 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                 brand_name: 'Waslerr',
                 user_action: 'PAY_NOW',
                 return_url: `${req.headers.origin}/checkout/success`,
-                cancel_url: `${req.headers.origin}/cart`
+                cancel_url: `${req.headers.origin}/cart`,
+                shipping_preference: 'NO_SHIPPING'
             }
         });
 
+        // 4. Execute PayPal request
+        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
         const order = await client().execute(request);
+        console.log('PayPal order response:', JSON.stringify(order, null, 2));
 
-        // Create order in database
+        // 5. Extract approval URL
+        const approveLink = order.result.links.find(link => link.rel === 'approve');
+        if (!approveLink) {
+            throw new Error('No approval URL found in PayPal response');
+        }
+
+        // 6. Save order to database
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
             totalAmount: total,
             paypalOrderId: order.result.id,
-            status: 'pending'
+            status: 'pending',
+            paymentDetails: {
+                create_time: order.result.create_time,
+                links: order.result.links
+            }
         });
 
         await dbOrder.save();
 
+        // 7. Return response with all needed data
         res.json({
             success: true,
-            orderID: order.result.id
+            orderID: order.result.id,
+            approvalUrl: approveLink.href,  // This is what your frontend needs
+            paypalResponse: {
+                id: order.result.id,
+                status: order.result.status,
+                create_time: order.result.create_time
+            }
         });
 
     } catch (err) {
-        console.error('PayPal order error:', err);
-        res.status(500).json({
+        console.error('PayPal order error:', {
+            message: err.message,
+            stack: err.stack,
+            response: err.response || null
+        });
+
+        const errorResponse = {
             success: false,
             error: 'Failed to create PayPal order',
             message: err.message
-        });
+        };
+
+        // Add PayPal-specific error details if available
+        if (err.response) {
+            errorResponse.paypalError = {
+                status: err.response.statusCode,
+                details: err.response.result
+            };
+        }
+
+        res.status(500).json(errorResponse);
     }
 });
 
