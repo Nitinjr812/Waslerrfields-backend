@@ -37,6 +37,7 @@
     "mongoose": "^7.8.7",
     "multer": "^2.0.1",
     "multer-storage-cloudinary": "^4.0.0",
+    "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.4",
     "postman": "^0.2.0",
     "validator": "^13.11.0"

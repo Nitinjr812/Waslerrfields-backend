@@ -8,7 +8,7 @@ const { check, validationResult } = require('express-validator');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-
+const fetch = require('node-fetch');
 
 // Initialize app
 const app = express();
@@ -481,12 +481,12 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
+        // 1. Capture PayPal payment
         const request = new paypal.orders.OrdersCaptureRequest(orderID);
         request.requestBody({});
-
         const capture = await client().execute(request);
 
-        // Update order in database
+        // 2. Update order in database
         const updatedOrder = await Order.findOneAndUpdate(
             { paypalOrderId: orderID, user: req.user.id },
             {
@@ -504,82 +504,110 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // Clear user's cart
+        // 3. Clear user's cart
         await Cart.findOneAndUpdate(
             { user: req.user.id },
             { items: [] }
         );
 
-        // Send confirmation email
-        const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #4a5568;">Thank you for your order!</h2>
-        <p>Hi ${updatedOrder.user.name},</p>
-        <p>Your payment has been successfully processed. Here are your order details:</p>
-        
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <thead>
-            <tr style="background-color: #f7fafc;">
-              <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
-              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
-              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Qty</th>
-              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${updatedOrder.items.map(item => `
-              <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
-                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
-                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">${item.quantity}</td>
-                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${(item.price * item.quantity).toFixed(2)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colspan="3" style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
-              <td style="padding: 10px; text-align: right; font-weight: bold;">$${updatedOrder.totalAmount.toFixed(2)}</td>
-            </tr>
-          </tfoot>
-        </table>
-        
-        <p>Order ID: ${updatedOrder._id}</p>
-        <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
-        <p>If you have any questions, please contact our support team.</p>
-        <p>Best regards,<br>The Waslerr Team</p>
-      </div>
-    `;
+        // 4. Generate download link from Cloudflare Worker
+        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${updatedOrder.items[0].productId}`;
 
+        const workerResponse = await fetch(workerUrl, {
+            headers: {
+                "API-Key": process.env.CLOUDFLARE_API_SECRET,
+                "Content-Type": "application/json"
+            }
+        });
+
+        if (!workerResponse.ok) {
+            const error = await workerResponse.text();
+            throw new Error(`Worker failed: ${error}`);
+        }
+
+        const { url: downloadUrl } = await workerResponse.json();
+
+        // 5. Prepare email with download link
+        const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #4a5568;">Thank you for your order!</h2>
+            <p>Hi ${updatedOrder.user.name},</p>
+            <p>Your payment has been successfully processed. Here's your download link:</p>
+            
+            <div style="background: #f8fafc; padding: 20px; margin: 20px 0; text-align: center;">
+                <a href="${downloadUrl}" style="background: #4299e1; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+                    Download Your Music
+                </a>
+                <p style="color: #718096; font-size: 0.8em; margin-top: 10px;">
+                    Link expires in 10 minutes
+                </p>
+            </div>
+            
+            <h3 style="color: #4a5568;">Order Summary</h3>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <thead>
+                    <tr style="background-color: #f7fafc;">
+                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
+                        <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${updatedOrder.items.map(item => `
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
+                        <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
+                    </tr>
+                    `).join('')}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
+                        <td style="padding: 10px; text-align: right; font-weight: bold;">$${updatedOrder.totalAmount.toFixed(2)}</td>
+                    </tr>
+                </tfoot>
+            </table>
+            
+            <p>Order ID: ${updatedOrder._id}</p>
+            <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
+            <p>If you have any questions, please contact our support team.</p>
+            <p>Best regards,<br>The Waslerr Team</p>
+        </div>
+        `;
+
+        // 6. Send email
         await sendEmail(
             updatedOrder.user.email,
             `Your Waslerr Order #${updatedOrder._id}`,
             emailHtml
         );
 
+        // 7. Return success response
         res.json({
             success: true,
             order: updatedOrder,
-            capture: capture.result
+            capture: capture.result,
+            downloadUrl: downloadUrl // For debugging
         });
 
     } catch (err) {
-        console.error('PayPal capture error:', err);
+        console.error('Payment capture error:', err);
 
         // Update order status to failed in database
-        await Order.findOneAndUpdate(
-            { paypalOrderId: orderID, user: req.user.id },
-            { status: 'failed' }
-        );
+        if (orderID) {
+            await Order.findOneAndUpdate(
+                { paypalOrderId: orderID, user: req.user.id },
+                { status: 'failed' }
+            );
+        }
 
         res.status(500).json({
             success: false,
-            error: 'Failed to capture PayPal order',
-            message: err.message
+            error: 'Failed to complete order',
+            message: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
         });
     }
 });
-
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
     try {
