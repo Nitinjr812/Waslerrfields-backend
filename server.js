@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const r2 = require('./config/r2'); 
+const r2 = require('./config/r2');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -511,24 +511,21 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         if (!orderID) {
             return res.status(400).json({
                 success: false,
-                message: 'Order ID is required',
+                message: 'Order ID is required'
             });
         }
 
-        // 1. Capture payment from PayPal
+        // Capture PayPal payment
         const request = new paypal.orders.OrdersCaptureRequest(orderID);
         request.requestBody({});
         const capture = await client().execute(request);
 
-        // 2. Mark order as completed in DB
+        // Update order in DB
         const updatedOrder = await Order.findOneAndUpdate(
-            {
-                paypalOrderId: orderID,
-                user: req.user.id,
-            },
+            { paypalOrderId: orderID, user: req.user.id },
             {
                 status: 'completed',
-                paymentDetails: capture.result,
+                paymentDetails: capture.result
             },
             { new: true }
         ).populate('user', 'name email');
@@ -536,118 +533,103 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         if (!updatedOrder) {
             return res.status(404).json({
                 success: false,
-                message: 'Order not found',
+                message: 'Order not found'
             });
         }
 
-        // 3. Clear cart
+        // Clear user's cart
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // 4. Fetch products in order
+        // Get product versions to find r2MusicFile keys
         const productIds = updatedOrder.items.map((item) => item.productId);
         const products = await Product.find({ _id: { $in: productIds } });
 
-        // 5. Generate R2 links using Cloudflare Worker
         const downloadLinks = await Promise.all(
-            products.map(async (product) => {
-                const version = product.versions.find(v => v.r2MusicFile); // Pick first version with r2 file
+            products.map(async (product, index) => {
+                const version = product.versions.find((v) => v.r2MusicFile);
 
-                if (!version || !version.r2MusicFile) return null;
-
-                const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(version.r2MusicFile)}`;
-
-                const workerResponse = await fetch(workerUrl, {
-                    headers: {
-                        'API-Key': process.env.CLOUDFLARE_API_SECRET,
-                    },
-                });
-
-                if (!workerResponse.ok) {
-                    const errorMsg = await workerResponse.text();
-                    console.warn(`Failed to get link for ${version.r2MusicFile}:`, errorMsg);
+                if (!version) {
+                    console.log(`No r2MusicFile found for "${product.title}"`);
                     return null;
                 }
 
-                const { url } = await workerResponse.json();
+                const fileKey = version.r2MusicFile;
+                const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
 
-                return {
-                    title: product.title,
-                    artist: product.artist,
-                    url,
-                };
+                console.log(`🔗 Song #${index + 1}: "${product.title}"`);
+                console.log(`🎯 fileKey: ${fileKey}`);
+                console.log(`🌐 Worker Link: ${workerUrl}`);
+                console.log(`🔑 API-Key Being Used: ${process.env.CLOUDFLARE_API_SECRET}`);
+
+                try {
+                    const workerRes = await fetch(workerUrl, {
+                        headers: {
+                            'API-Key': process.env.CLOUDFLARE_API_SECRET
+                        }
+                    });
+
+                    const text = await workerRes.text();
+
+                    if (!workerRes.ok) {
+                        console.log(`❌ Worker failed for ${fileKey}:`, workerRes.status, text);
+                        return null;
+                    }
+
+                    const { url } = JSON.parse(text);
+
+                    console.log(`✅ Success! File link generated: ${url}`);
+
+                    return {
+                        title: product.title,
+                        artist: product.artist,
+                        url
+                    };
+                } catch (err) {
+                    console.log(`❌ Exception talking to Cloudflare Worker for fileKey: ${fileKey}`, err);
+                    return null;
+                }
             })
         );
 
+        // Filter valid links only
         const validLinks = downloadLinks.filter(Boolean);
 
-        // 6. Build Email
+        // Send cute email with download links
         const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #4a5568;">Thanks for your order, ${updatedOrder.user.name}!</h2>
-        <p>Here's your download link(s):</p>
-        ${validLinks.map(link => `
-          <div style="margin-bottom: 20px;">
-            <strong>${link.title} by ${link.artist}</strong><br />
-            <a href="${link.url}"
-              style="display: inline-block; background: #4299e1; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-              Download
-            </a>
-          </div>
-        `).join('')}
-        <br />
-        <h3 style="color: #4a5568;">Order Summary</h3>
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <thead>
-            <tr style="background-color: #f7fafc;">
-              <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
-              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${updatedOrder.items.map(item => `
-              <tr>
-                <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
-                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
-              <td style="padding: 10px; text-align: right; font-weight: bold;">
-                $${updatedOrder.totalAmount.toFixed(2)}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-        <p style="margin-top: 10px;">Order ID: ${updatedOrder._id}</p>
-        <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
-        <p>Enjoy your music! 🎵</p>
-      </div>
-    `;
+      <div style="font-family: Arial; max-width: 600px; margin: auto;">
+        <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
+        <p>Here are your download links:</p>
+        ${validLinks.map(link => `
+          <div style="margin: 10px 0;">
+            <strong>${link.title} by ${link.artist}</strong> <br/>
+            <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
+              text-decoration: none;" href="${link.url}" target="_blank">Download</a>
+          </div>
+        `).join('')}
+        <p><small>Links expire in 10 minutes.</small></p>
+        <p>Stay awesome,<br/>Waslerr Team</p>
+      </div>
+    `;
 
-        // 7. Send email with download link(s)
         await sendEmail(
             updatedOrder.user.email,
             `Your Waslerr Order #${updatedOrder._id}`,
             emailHtml
         );
 
-        // 8. Return response
         res.json({
             success: true,
+            message: 'Payment captured and download link sent!',
             order: updatedOrder,
             capture: capture.result,
-            downloadLinks: validLinks,
+            downloadLinks: validLinks
         });
-
     } catch (err) {
-        console.error('Payment capture failed:', err);
+        console.error('❗ Payment capture error:', err);
 
-        // 🛑 Update failed payment in DB if needed
-        if (req.body?.orderID) {
+        if (orderID) {
             await Order.findOneAndUpdate(
-                { paypalOrderId: req.body.orderID, user: req.user.id },
+                { paypalOrderId: orderID, user: req.user.id },
                 { status: 'failed' }
             );
         }
@@ -656,10 +638,11 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             success: false,
             error: 'Failed to complete order',
             message: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
         });
     }
 });
+
 
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
