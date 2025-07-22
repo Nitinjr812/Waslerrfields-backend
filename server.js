@@ -336,45 +336,32 @@ app.put('/api/cart', protect, async (req, res) => {
     }
 });
 
-const musicUpload = require("./config/musicMulter"); 
-
+const musicUpload = require("./config/musicMulter");
 app.post('/api/admin/upload-song', protect, musicUpload.single('song'), async (req, res) => {
-  try {
-    // JUST COMMENT THIS FOR NOW:
-    // if (req.user.role !== 'admin') {
-    //   return res.status(403).json({ error: 'Unauthorized' });
-    // }
+    try {
+        if (!req.user || req.user.role !== 'admin')
+            return res.status(403).json({ error: 'Unauthorized' });
+        if (!req.file)
+            return res.status(400).json({ error: 'No file uploaded' });
 
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file uploaded" });
+        const file = req.file;
+        const key = `songs/${Date.now()}-${file.originalname}`;
+
+        await r2.upload({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            Body: file.buffer,
+            ContentType: file.mimetype
+        }).promise();
+
+        res.json({
+            success: true,
+            key,
+            url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Upload failed', message: err.message });
     }
-
-    const file = req.file;
-    const key = `songs/${Date.now()}-${file.originalname}`;
-
-    const uploadResult = await r2.upload({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype
-    }).promise();
-
-    console.log("✅ R2 Upload:", key);
-
-    res.json({
-      success: true,
-      key: key,
-      url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
-    });
-
-  } catch (error) {
-    console.error("❗ Upload Error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Upload failed",
-      error: error.message
-    });
-  }
 });
 
 // Payment Routes
