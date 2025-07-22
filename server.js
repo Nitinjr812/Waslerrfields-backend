@@ -336,37 +336,39 @@ app.put('/api/cart', protect, async (req, res) => {
     }
 });
 
+const musicUpload = require("./config/musicMulter"); 
 
-app.post('/api/admin/upload-song', protect, upload.single('song'), async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Unauthorized' });
-        }
-
-        const file = req.file;
-        if (!file) return res.status(400).json({ error: 'No file uploaded' });
-
-        const key = `songs/${Date.now()}-${file.originalname}`;
-
-        const result = await r2.upload({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: key,
-            Body: file.buffer,
-            ContentType: file.mimetype,
-            ACL: 'public-read' // Not needed if you're using Worker to serve
-        }).promise();
-
-        res.json({
-            success: true,
-            key,
-            url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
-        });
-
-    } catch (err) {
-        console.error('Upload to R2 error:', err);
-        res.status(500).json({ error: 'Upload failed', message: err.message });
+app.post('/api/admin/upload-song', protect, musicUpload.single('song'), async (req, res) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Unauthorized' });
     }
+
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const key = `songs/${Date.now()}-${file.originalname}`;
+
+    const result = await r2.upload({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.mimetype
+    }).promise();
+
+    console.log("✅ Uploaded to R2:", key);
+
+    res.json({
+      success: true,
+      key,
+      url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
+    });
+  } catch (err) {
+    console.error("❗ Upload to R2 error:", err);
+    res.status(500).json({ error: 'Upload failed', message: err.message });
+  }
 });
+
 // Payment Routes
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
