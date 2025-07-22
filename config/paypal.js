@@ -11,7 +11,7 @@ function environment() {
 
   if (process.env.PAYPAL_ENVIRONMENT === 'production') {
     return new checkoutNodeJssdk.core.LiveEnvironment(clientId, clientSecret);
-  } else {
+  } else {  
     return new checkoutNodeJssdk.core.SandboxEnvironment(clientId, clientSecret);
   }
 }

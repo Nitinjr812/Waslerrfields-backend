@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
+const r2 = require('./config/r2');
+const multer = require('multer');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -118,6 +120,38 @@ userSchema.pre('save', async function (next) {
 
 const User = mongoose.model('User', userSchema);
 
+
+app.post('/api/admin/upload-song', protect, upload.single('song'), async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: 'No file uploaded' });
+
+        const key = `songs/${Date.now()}-${file.originalname}`;
+
+        const result = await r2.upload({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            Body: file.buffer,
+            ContentType: file.mimetype,
+            ACL: 'public-read' // Not needed if you're using Worker to serve
+        }).promise();
+
+        res.json({
+            success: true,
+            key,
+            url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
+        });
+
+    } catch (err) {
+        console.error('Upload to R2 error:', err);
+        res.status(500).json({ error: 'Upload failed', message: err.message });
+    }
+});
+
 // Cart Model
 const cartSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -162,6 +196,7 @@ const productSchema = new mongoose.Schema({
     versions: [{
         name: { type: String, required: true },
         price: { type: Number, required: true },
+        r2MusicFile: { type: String },
         features: [String]
     }],
     images: [{
@@ -477,22 +512,24 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         if (!orderID) {
             return res.status(400).json({
                 success: false,
-                message: 'Order ID is required'
+                message: 'Order ID is required',
             });
         }
 
-        // 1. Capture PayPal payment
+        // 1. Capture payment from PayPal
         const request = new paypal.orders.OrdersCaptureRequest(orderID);
         request.requestBody({});
         const capture = await client().execute(request);
 
-        // 2. Update order in database
+        // 2. Mark order as completed in DB
         const updatedOrder = await Order.findOneAndUpdate(
-            { paypalOrderId: orderID, user: req.user.id },
+            {
+                paypalOrderId: orderID,
+                user: req.user.id,
+            },
             {
                 status: 'completed',
                 paymentDetails: capture.result,
-                $set: { 'paymentDetails.update_time': new Date() }
             },
             { new: true }
         ).populate('user', 'name email');
@@ -500,102 +537,118 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         if (!updatedOrder) {
             return res.status(404).json({
                 success: false,
-                message: 'Order not found'
+                message: 'Order not found',
             });
         }
 
-        // 3. Clear user's cart
-        await Cart.findOneAndUpdate(
-            { user: req.user.id },
-            { items: [] }
+        // 3. Clear cart
+        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
+
+        // 4. Fetch products in order
+        const productIds = updatedOrder.items.map((item) => item.productId);
+        const products = await Product.find({ _id: { $in: productIds } });
+
+        // 5. Generate R2 links using Cloudflare Worker
+        const downloadLinks = await Promise.all(
+            products.map(async (product) => {
+                const version = product.versions.find(v => v.r2MusicFile); // Pick first version with r2 file
+
+                if (!version || !version.r2MusicFile) return null;
+
+                const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(version.r2MusicFile)}`;
+
+                const workerResponse = await fetch(workerUrl, {
+                    headers: {
+                        'API-Key': process.env.CLOUDFLARE_API_SECRET,
+                    },
+                });
+
+                if (!workerResponse.ok) {
+                    const errorMsg = await workerResponse.text();
+                    console.warn(`Failed to get link for ${version.r2MusicFile}:`, errorMsg);
+                    return null;
+                }
+
+                const { url } = await workerResponse.json();
+
+                return {
+                    title: product.title,
+                    artist: product.artist,
+                    url,
+                };
+            })
         );
 
-        // 4. Generate download link from Cloudflare Worker
-        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${updatedOrder.items[0].productId}`;
+        const validLinks = downloadLinks.filter(Boolean);
 
-        const workerResponse = await fetch(workerUrl, {
-            headers: {
-                "API-Key": process.env.CLOUDFLARE_API_SECRET,
-                "Content-Type": "application/json"
-            }
-        });
-
-        if (!workerResponse.ok) {
-            const error = await workerResponse.text();
-            throw new Error(`Worker failed: ${error}`);
-        }
-
-        const { url: downloadUrl } = await workerResponse.json();
-
-        // 5. Prepare email with download link
+        // 6. Build Email
         const emailHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #4a5568;">Thank you for your order!</h2>
-            <p>Hi ${updatedOrder.user.name},</p>
-            <p>Your payment has been successfully processed. Here's your download link:</p>
-            
-            <div style="background: #f8fafc; padding: 20px; margin: 20px 0; text-align: center;">
-                <a href="${downloadUrl}" style="background: #4299e1; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-                    Download Your Music
-                </a>
-                <p style="color: #718096; font-size: 0.8em; margin-top: 10px;">
-                    Link expires in 10 minutes
-                </p>
-            </div>
-            
-            <h3 style="color: #4a5568;">Order Summary</h3>
-            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-                <thead>
-                    <tr style="background-color: #f7fafc;">
-                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
-                        <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${updatedOrder.items.map(item => `
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
-                        <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
-                    </tr>
-                    `).join('')}
-                </tbody>
-                <tfoot>
-                    <tr>
-                        <td style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
-                        <td style="padding: 10px; text-align: right; font-weight: bold;">$${updatedOrder.totalAmount.toFixed(2)}</td>
-                    </tr>
-                </tfoot>
-            </table>
-            
-            <p>Order ID: ${updatedOrder._id}</p>
-            <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
-            <p>If you have any questions, please contact our support team.</p>
-            <p>Best regards,<br>The Waslerr Team</p>
-        </div>
-        `;
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #4a5568;">Thanks for your order, ${updatedOrder.user.name}!</h2>
+        <p>Here's your download link(s):</p>
+        ${validLinks.map(link => `
+          <div style="margin-bottom: 20px;">
+            <strong>${link.title} by ${link.artist}</strong><br />
+            <a href="${link.url}"
+              style="display: inline-block; background: #4299e1; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+              Download
+            </a>
+          </div>
+        `).join('')}
+        <br />
+        <h3 style="color: #4a5568;">Order Summary</h3>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <thead>
+            <tr style="background-color: #f7fafc;">
+              <th style="padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0;">Item</th>
+              <th style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${updatedOrder.items.map(item => `
+              <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">${item.title} by ${item.artist}</td>
+                <td style="padding: 10px; text-align: right; border-bottom: 1px solid #e2e8f0;">$${item.price.toFixed(2)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style="padding: 10px; text-align: right; font-weight: bold;">Total:</td>
+              <td style="padding: 10px; text-align: right; font-weight: bold;">
+                $${updatedOrder.totalAmount.toFixed(2)}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+        <p style="margin-top: 10px;">Order ID: ${updatedOrder._id}</p>
+        <p>Payment ID: ${updatedOrder.paypalOrderId}</p>
+        <p>Enjoy your music! 🎵</p>
+      </div>
+    `;
 
-        // 6. Send email
+        // 7. Send email with download link(s)
         await sendEmail(
             updatedOrder.user.email,
             `Your Waslerr Order #${updatedOrder._id}`,
             emailHtml
         );
 
-        // 7. Return success response
+        // 8. Return response
         res.json({
             success: true,
             order: updatedOrder,
             capture: capture.result,
-            downloadUrl: downloadUrl // For debugging
+            downloadLinks: validLinks,
         });
 
     } catch (err) {
-        console.error('Payment capture error:', err);
+        console.error('Payment capture failed:', err);
 
-        // Update order status to failed in database
-        if (orderID) {
+        // 🛑 Update failed payment in DB if needed
+        if (req.body?.orderID) {
             await Order.findOneAndUpdate(
-                { paypalOrderId: orderID, user: req.user.id },
+                { paypalOrderId: req.body.orderID, user: req.user.id },
                 { status: 'failed' }
             );
         }
@@ -604,10 +657,11 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             success: false,
             error: 'Failed to complete order',
             message: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
         });
     }
 });
+
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
     try {
