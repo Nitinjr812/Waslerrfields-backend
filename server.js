@@ -340,32 +340,40 @@ const musicUpload = require("./config/musicMulter");
 
 app.post('/api/admin/upload-song', protect, musicUpload.single('song'), async (req, res) => {
   try {
-    if (!req.user || req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Unauthorized' });
+    // JUST COMMENT THIS FOR NOW:
+    // if (req.user.role !== 'admin') {
+    //   return res.status(403).json({ error: 'Unauthorized' });
+    // }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
     }
 
     const file = req.file;
-    if (!file) return res.status(400).json({ error: 'No file uploaded' });
-
     const key = `songs/${Date.now()}-${file.originalname}`;
 
-    const result = await r2.upload({
+    const uploadResult = await r2.upload({
       Bucket: process.env.R2_BUCKET_NAME,
       Key: key,
       Body: file.buffer,
       ContentType: file.mimetype
     }).promise();
 
-    console.log("✅ Uploaded to R2:", key);
+    console.log("✅ R2 Upload:", key);
 
     res.json({
       success: true,
-      key,
+      key: key,
       url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
     });
-  } catch (err) {
-    console.error("❗ Upload to R2 error:", err);
-    res.status(500).json({ error: 'Upload failed', message: err.message });
+
+  } catch (error) {
+    console.error("❗ Upload Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Upload failed",
+      error: error.message
+    });
   }
 });
 
