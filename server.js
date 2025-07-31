@@ -335,35 +335,7 @@ app.put('/api/cart', protect, async (req, res) => {
         });
     }
 });
-
-const musicUpload = require("./config/musicMulter");
-app.post('/api/admin/upload-song', protect, musicUpload.single('song'), async (req, res) => {
-    try {
-        if (!req.user || req.user.role !== 'admin')
-            return res.status(403).json({ error: 'Unauthorized' });
-        if (!req.file)
-            return res.status(400).json({ error: 'No file uploaded' });
-
-        const file = req.file;
-        const key = `songs/${Date.now()}-${file.originalname}`;
-
-        await r2.upload({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: key,
-            Body: file.buffer,
-            ContentType: file.mimetype
-        }).promise();
-
-        res.json({
-            success: true,
-            key,
-            url: `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(key)}`
-        });
-    } catch (err) {
-        res.status(500).json({ error: 'Upload failed', message: err.message });
-    }
-});
-
+ 
 // Payment Routes
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
@@ -1002,14 +974,7 @@ app.put('/api/products/:id', protect, upload.array('newImages', 5), async (req, 
             });
         }
 
-        // Check if user owns the product or is admin
-        if (product.createdBy.toString() !== req.user.id && req.user.role !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                error: 'Not authorized to update this product'
-            });
-        }
-
+        
         const { title, description, versions, artist, category, removeImages } = req.body;
 
         // Parse versions if provided
@@ -1081,7 +1046,7 @@ app.delete('/api/products/:id', protect, async (req, res) => {
     try {
         console.log('=== DELETE PRODUCT REQUEST ===');
         console.log('Product ID:', req.params.id);
-        console.log('User ID:', req.user.id);
+        console.log('User ID:', req.user.id);   
 
         const product = await Product.findById(req.params.id);
 
