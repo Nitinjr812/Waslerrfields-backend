@@ -335,7 +335,7 @@ app.put('/api/cart', protect, async (req, res) => {
         });
     }
 });
- 
+
 // Payment Routes
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
@@ -973,8 +973,17 @@ app.put('/api/products/:id', protect, upload.array('newImages', 5), async (req, 
                 error: 'Product not found'
             });
         }
+        // Node/Express, protected
+        app.delete('/api/orders', protect, async (req, res) => {
+            try {
+                await Order.deleteMany({ user: req.user.id });
+                res.json({ success: true, message: "All orders cleared" });
+            } catch (err) {
+                res.status(500).json({ success: false, error: err.message });
+            }
+        });
 
-        
+
         const { title, description, versions, artist, category, removeImages } = req.body;
 
         // Parse versions if provided
@@ -1046,7 +1055,7 @@ app.delete('/api/products/:id', protect, async (req, res) => {
     try {
         console.log('=== DELETE PRODUCT REQUEST ===');
         console.log('Product ID:', req.params.id);
-        console.log('User ID:', req.user.id);   
+        console.log('User ID:', req.user.id);
 
         const product = await Product.findById(req.params.id);
 
