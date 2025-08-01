@@ -340,6 +340,8 @@ app.put('/api/cart', protect, async (req, res) => {
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
 const { sendEmail } = require('./config/nodemailer');
+
+
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
