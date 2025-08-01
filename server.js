@@ -10,6 +10,7 @@ const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const fetch = require('node-fetch');
+const s3 = require('./config/r2');
 
 // Initialize app
 const app = express();
