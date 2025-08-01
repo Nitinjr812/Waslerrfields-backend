@@ -340,6 +340,64 @@ app.put('/api/cart', protect, async (req, res) => {
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
 const { sendEmail } = require('./config/nodemailer');
+app.post('/api/payment/free-order', protect, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user)
+            return res.status(404).json({ success: false, message: "User not found" });
+
+        const cart = await Cart.findOne({ user: req.user.id });
+        if (!cart || cart.items.length === 0)
+            return res.status(400).json({ success: false, message: "Cart is empty" });
+
+        const total = cart.items.reduce(
+            (sum, item) => sum + Number(item.price) * Number(item.quantity),
+            0
+        );
+        if (total !== 0)
+            return res
+                .status(400)
+                .json({ success: false, message: "Order total must be zero for free order" });
+
+        const order = new Order({
+            user: req.user.id,
+            items: cart.items,
+            totalAmount: 0,
+            paypalOrderId: "freeorder-" + Date.now(),
+            status: "completed",
+            paymentDetails: { method: "free", email: user.email },
+        });
+        await order.save();
+        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
+
+        // Download links demo logic — customize as per your media setup:
+        const downloadLinks = [];
+        for (const item of cart.items) {
+            const product = await Product.findById(item.productId);
+            if (!product) continue;
+            const version =
+                product.versions.find((v) => v.name === item.version) || product.versions[0];
+            if (!version || !version.r2MusicFile) continue;
+            const url = `https://${process.env.R2_BUCKET_NAME}.r2.cloudflarestorage.com/${version.r2MusicFile}`;
+            downloadLinks.push({
+                title: product.title,
+                artist: product.artist,
+                url,
+            });
+        }
+
+        // Send a confirmation email if needed, then return:
+        res.json({
+            success: true,
+            message: "Free order placed!",
+            downloadLinks,
+            orderId: order._id,
+        });
+    } catch (err) {
+        console.error("Error in free order route:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 // Create PayPal Order
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
@@ -972,60 +1030,9 @@ app.put('/api/products/:id', protect, upload.array('newImages', 5), async (req, 
                 success: false,
                 error: 'Product not found'
             });
-        } 
-// ...models and protect middleware ke import...
+        }
+        // ...models and protect middleware ke import...
 
-app.post('/api/payment/free-order', protect, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-    const cart = await Cart.findOne({ user: req.user.id });
-    if (!cart || cart.items.length === 0)
-      return res.status(400).json({ success: false, message: "Cart is empty" });
-
-    const total = cart.items.reduce(
-      (sum, item) => sum + Number(item.price) * Number(item.quantity),
-      0
-    );
-    if (total !== 0)
-      return res.status(400).json({ success: false, message: "Order is not free (total must be $0)" });
-
-    const order = new Order({
-      user: req.user.id,
-      items: cart.items,
-      totalAmount: 0,
-      paypalOrderId: "freeorder-" + Date.now(),
-      status: "completed",
-      paymentDetails: { method: "free", email: user.email },
-    });
-    await order.save();
-    await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
-
-    // -- Download link creation logic here (see earlier code for details) --
-    const downloadLinks = [];
-    for (const item of cart.items) {
-      const product = await Product.findById(item.productId);
-      if (!product) continue;
-      const version = product.versions.find(v => v.name === item.version) || product.versions[0];
-      if (!version || !version.r2MusicFile) continue;
-      const url = `https://${process.env.R2_BUCKET_NAME}.r2.cloudflarestorage.com/${version.r2MusicFile}`;
-      downloadLinks.push({ title: product.title, artist: product.artist, url });
-    }
-
-    // -- Email sending logic (already in your code) here --
-
-    res.json({
-      success: true,
-      message: "Free order placed! Download links sent to your email.",
-      downloadLinks,
-      orderId: order._id,
-    });
-  } catch (error) {
-    console.error("Free order error:", error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
 
         // Node/Express, protected
         app.delete('/api/orders', protect, async (req, res) => {
