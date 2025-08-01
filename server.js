@@ -341,6 +341,14 @@ const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
 const { sendEmail } = require('./config/nodemailer');
 
+function getSignedDownloadUrl(fileKey) {
+    const params = {
+        Bucket: process.env.R2_BUCKET_NAME, // Jo bucket tumne .env me setup kiya
+        Key: fileKey,                       // e.g. 'Meditation field.mp3'
+        Expires: 600,                       // 10 min expiry in seconds
+    };
+    return s3.getSignedUrl('getObject', params);
+}
 
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
@@ -377,16 +385,19 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         for (const item of cart.items) {
             const product = await Product.findById(item.productId);
             if (!product) continue;
-            const version =
-                product.versions.find((v) => v.name === item.version) || product.versions[0];
+
+            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
             if (!version || !version.r2MusicFile) continue;
-            const url = `https://${process.env.R2_BUCKET_NAME}.r2.cloudflarestorage.com/${version.r2MusicFile}`;
+
+            const url = getSignedDownloadUrl(version.r2MusicFile);  // Yeh function baad me define karna hai (below)
+
             downloadLinks.push({
                 title: product.title,
                 artist: product.artist,
                 url,
             });
         }
+
 
         // Send a confirmation email if needed, then return:
         res.json({
@@ -400,6 +411,9 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+
+
+
 
 // Create PayPal Order
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
