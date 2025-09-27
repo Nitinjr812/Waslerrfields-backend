@@ -878,83 +878,115 @@ app.get('/api/auth/me', protect, async (req, res) => {
 
 // Create Product with Images
 app.post('/api/products', protect, upload.array('images', 5), async (req, res) => {
-    try {
-        console.log('=== CREATE PRODUCT REQUEST ===');
-        console.log('User ID:', req.user.id);
-        console.log('Body:', req.body);
-        console.log('Files:', req.files);
+  try {
+    console.log('=== CREATE PRODUCT REQUEST ===');
+    console.log('User ID:', req.user.id);
+    console.log('Body:', req.body);
+    console.log('Files:', req.files);
 
-        const { title, description, versions, artist, category } = req.body;
+    const { title, description, versions, artist, category } = req.body;
 
-        // Validate required fields
-        if (!title || !description || !artist) {
-            return res.status(400).json({
-                success: false,
-                error: 'Title, description, and artist are required'
-            });
-        }
-
-        // Parse versions if it's a string
-        let parsedVersions = [];
-        if (versions) {
-            try {
-                parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
-            } catch (err) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Invalid versions format'
-                });
-            }
-        }
-
-        // Process uploaded images
-        const images = req.files ? req.files.map(file => ({
-            url: file.path,
-            publicId: file.filename
-        })) : [];
-
-        const product = new Product({
-            title,
-            description,
-            versions: parsedVersions,
-            images,
-            artist,
-            category: category || 'general',
-            createdBy: req.user.id
-        });
-
-        await product.save();
-
-        console.log('Product created successfully:', product._id);
-
-        res.status(201).json({
-            success: true,
-            product,
-            message: 'Product created successfully'
-        });
-
-    } catch (err) {
-        console.error('=== CREATE PRODUCT ERROR ===');
-        console.error('Error:', err);
-
-        // If there were uploaded files, clean them up
-        if (req.files && req.files.length > 0) {
-            for (const file of req.files) {
-                try {
-                    await cloudinary.uploader.destroy(file.filename);
-                } catch (cleanupErr) {
-                    console.error('Cleanup error:', cleanupErr);
-                }
-            }
-        }
-
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            message: err.message
-        });
+    // Validate required fields
+    if (!title || !description || !artist) {
+      return res.status(400).json({
+        success: false,
+        error: 'Title, description, and artist are required'
+      });
     }
+
+    // Check images are uploaded
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least one image is required'
+      });
+    }
+
+    // Parse versions if it's a string
+    let parsedVersions = [];
+    if (versions) {
+      try {
+        parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
+      } catch (err) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid versions format'
+        });
+      }
+    }
+
+    // Validate versions array and each version object
+    if (!parsedVersions || !Array.isArray(parsedVersions) || parsedVersions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least one version is required'
+      });
+    }
+    for (const v of parsedVersions) {
+      if (!v.name || v.price === undefined || !v.r2MusicFile) {
+        return res.status(400).json({
+          success: false,
+          error: 'Each version must have a name, price, and r2MusicFile'
+        });
+      }
+    }
+
+    // Convert price to number for each version
+    parsedVersions = parsedVersions.map(v => ({
+      ...v,
+      price: Number(v.price)
+    }));
+
+    // Process uploaded images for URLs and public IDs
+    const images = req.files.map(file => ({
+      url: file.path,
+      publicId: file.filename
+    }));
+
+    // Create new Product document
+    const product = new Product({
+      title,
+      description,
+      versions: parsedVersions,
+      images,
+      artist,
+      category: category || 'general',
+      createdBy: req.user.id
+    });
+
+    await product.save();
+
+    console.log('Product created successfully:', product._id);
+
+    res.status(201).json({
+      success: true,
+      product,
+      message: 'Product created successfully'
+    });
+
+  } catch (err) {
+    console.error('=== CREATE PRODUCT ERROR ===');
+    console.error('Error:', err);
+
+    // Clean up uploaded files on error
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          await cloudinary.uploader.destroy(file.filename);
+        } catch (cleanupErr) {
+          console.error('Cleanup error:', cleanupErr);
+        }
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Server error',
+      message: err.message
+    });
+  }
 });
+
 
 // Get All Products (Public)
 app.get('/api/products', async (req, res) => {
@@ -1141,8 +1173,8 @@ app.delete('/api/products/:id', protect, async (req, res) => {
             return res.status(404).json({
                 success: false,
                 error: 'Product not found'
-            });
-        }
+                });
+            }
 
         // Check if user owns the product or is admin
        
