@@ -11,9 +11,6 @@ const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const fetch = require('node-fetch');
 const s3 = require('./config/r2');
-app.use(require('./routes/coupon'));
-const Coupon = require('../models/Coupon');
-
 
 // Initialize app
 const app = express();
@@ -140,7 +137,16 @@ const cartSchema = new mongoose.Schema({
 });
 
 const Cart = mongoose.model('Cart', cartSchema);
+// coupoun model
+const couponSchema = new mongoose.Schema({
+    code: { type: String, required: true, unique: true },
+    discountPercentage: { type: Number, required: true },
+    validFrom: { type: Date, default: Date.now },
+    validUntil: { type: Date },
+    isActive: { type: Boolean, default: true },
+});
 
+const Coupon = mongoose.model('Coupon', couponSchema);
 // Order Model
 const orderSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -187,10 +193,8 @@ const Product = mongoose.model('Product', productSchema);
 // Auth Middleware
 const protect = async (req, res, next) => {
     let token;
-    if (
-        req.headers.authorization &&
-        req.headers.authorization.startsWith('Bearer')
-    ) {
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
         token = req.headers.authorization.split(' ')[1];
     } else if (req.header('x-auth-token')) {
         token = req.header('x-auth-token');
@@ -201,16 +205,14 @@ const protect = async (req, res, next) => {
     }
 
     try {
-        const decoded = jwt.verify(token, process.env.JWTSECRET);
-        req.user = await User.findById(decoded.user.id).select('-password');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = await User.findById(decoded.user.id);
         if (!req.user) {
             return res.status(401).json({ success: false, message: 'User not found' });
         }
         next();
     } catch (err) {
-        if (err.name === 'TokenExpiredError') {
-            return res.status(401).json({ success: false, message: 'Token expired' });
-        }
+        console.error('Auth error:', err);
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
 };
@@ -422,9 +424,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
 
 
 
-
-// Create PayPal Order
-// Create PayPal Order
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         // 1. Validate user and cart
@@ -444,27 +443,11 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // 2. Calculate total
-        let total = cart.items.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0);
-        let appliedDiscount = 0;
-
-        // 3. Coupon check logic START
-        if (req.body.couponCode) {
-            const coupon = await Coupon.findOne({ code: req.body.couponCode });
-            if (coupon && (!coupon.expiry || new Date() < coupon.expiry) && (!coupon.maxUses || coupon.currentUses < coupon.maxUses)) {
-                if (coupon.discountType === 'percent') {
-                    appliedDiscount = total * (coupon.discountValue / 100);
-                } else {
-                    appliedDiscount = coupon.discountValue;
-                }
-                total = Math.max(0, total - appliedDiscount);
-                coupon.currentUses += 1;
-                await coupon.save();
-            } else {
-                return res.status(400).json({ success: false, message: 'Invalid or expired coupon' });
-            }
-        }
-        // 3. Coupon check logic END
+        // 2. Calculate total and validate items
+        const total = cart.items.reduce((sum, item) => {
+            const itemTotal = Number(item.price) * Number(item.quantity);
+            return sum + itemTotal;
+        }, 0);
 
         if (total <= 0) {
             return res.status(400).json({
@@ -473,7 +456,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // 4. Create PayPal order request
+        // 3. Create PayPal order request
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer("return=representation");
         request.requestBody({
@@ -508,24 +491,22 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             }
         });
 
-        // 5. Execute PayPal request
+        // 4. Execute PayPal request
         console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
         const order = await client().execute(request);
         console.log('PayPal order response:', JSON.stringify(order, null, 2));
 
-        // 6. Extract approval URL
+        // 5. Extract approval URL
         const approveLink = order.result.links.find(link => link.rel === 'approve');
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
-        // 7. Save order to database
+        // 6. Save order to database
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
             totalAmount: total,
-            discountApplied: appliedDiscount,
-            couponCode: req.body.couponCode,
             paypalOrderId: order.result.id,
             status: 'pending',
             paymentDetails: {
@@ -536,7 +517,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
         await dbOrder.save();
 
-        // 8. Return response with all needed data
+        // 7. Return response with all needed data
         res.json({
             success: true,
             orderID: order.result.id,
@@ -561,6 +542,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             message: err.message
         };
 
+        // Add PayPal-specific error details if available
         if (err.response) {
             errorResponse.paypalError = {
                 status: err.response.statusCode,
@@ -759,6 +741,75 @@ app.get('/api/orders/:id', protect, async (req, res) => {
             error: 'Failed to get order',
             message: err.message
         });
+    }
+});
+
+app.post('/api/admin/coupons', protect, async (req, res) => {
+    try {
+
+        const { code, discountPercentage, validFrom, validUntil, isActive } = req.body;
+
+        if (!code || !discountPercentage) {
+            return res.status(400).json({ success: false, message: 'Code and discount required' });
+        }
+
+        const existing = await Coupon.findOne({ code });
+        if (existing) {
+            return res.status(400).json({ success: false, message: 'Coupon code already exists' });
+        }
+
+        const coupon = new Coupon({ code, discountPercentage, validFrom, validUntil, isActive });
+        await coupon.save();
+
+        res.status(201).json({ success: true, message: 'Coupon created', coupon });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error creating coupon', error: error.message });
+    }
+});
+
+
+app.put('/api/cart', protect, async (req, res) => {
+    try {
+        const { items, couponCode } = req.body;
+
+        if (!items || !Array.isArray(items)) {
+            return res.status(400).json({ error: 'Items must be an array' });
+        }
+
+        let discount = 0;
+        let appliedCoupon = null;
+        if (couponCode) {
+            const coupon = await Coupon.findOne({ code: couponCode, isActive: true });
+            const now = new Date();
+            if (!coupon) {
+                return res.status(400).json({ error: 'Invalid coupon code' });
+            }
+            if ((coupon.validFrom && coupon.validFrom > now) || (coupon.validUntil && coupon.validUntil < now)) {
+                return res.status(400).json({ error: 'Coupon not valid at this time' });
+            }
+            discount = coupon.discountPercentage;
+            appliedCoupon = coupon;
+        }
+
+        // Calculate total with discount
+        const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+        const discountedTotal = total - (total * discount / 100);
+
+        // Save cart and coupon info to DB (example, adjust based on your Cart model)
+        let cart = await Cart.findOne({ user: req.user.id });
+        if (!cart) {
+            cart = new Cart({ user: req.user.id });
+        }
+        cart.items = items;
+        cart.coupon = appliedCoupon ? appliedCoupon._id : null;
+        cart.discount = discount;
+        cart.total = discountedTotal;
+
+        await cart.save();
+
+        res.json({ success: true, cart });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 });
 
