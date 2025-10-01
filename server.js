@@ -346,6 +346,42 @@ app.put('/api/cart', protect, async (req, res) => {
     }
 });
 
+app.post('/api/coupons/validate', protect, async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ success: false, message: 'Coupon code is required' });
+    }
+
+    // Find active coupon by code
+    const coupon = await Coupon.findOne({ code, isActive: true });
+
+    if (!coupon) {
+      return res.status(400).json({ success: false, message: 'Invalid coupon code' });
+    }
+
+    const now = new Date();
+
+    if (coupon.validFrom && coupon.validFrom > now) {
+      return res.status(400).json({ success: false, message: 'Coupon not valid yet' });
+    }
+
+    if (coupon.validUntil && coupon.validUntil < now) {
+      return res.status(400).json({ success: false, message: 'Coupon has expired' });
+    }
+
+    // Return discount details
+    res.json({
+      success: true,
+      discountPercentage: coupon.discountPercentage,
+      discountAmount: coupon.discountPercentage,  // frontend can calculate with total
+      message: 'Coupon applied successfully',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error validating coupon', error: error.message });
+  }
+});
 // Payment Routes
 const { client } = require('./config/paypal');
 const paypal = require('@paypal/checkout-server-sdk');
