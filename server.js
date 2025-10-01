@@ -11,6 +11,9 @@ const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const fetch = require('node-fetch');
 const s3 = require('./config/r2');
+app.use(require('./routes/coupon'));
+const Coupon = require('../models/Coupon');
+
 
 // Initialize app
 const app = express();
@@ -184,8 +187,10 @@ const Product = mongoose.model('Product', productSchema);
 // Auth Middleware
 const protect = async (req, res, next) => {
     let token;
-
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    if (
+        req.headers.authorization &&
+        req.headers.authorization.startsWith('Bearer')
+    ) {
         token = req.headers.authorization.split(' ')[1];
     } else if (req.header('x-auth-token')) {
         token = req.header('x-auth-token');
@@ -196,14 +201,16 @@ const protect = async (req, res, next) => {
     }
 
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        req.user = await User.findById(decoded.user.id);
+        const decoded = jwt.verify(token, process.env.JWTSECRET);
+        req.user = await User.findById(decoded.user.id).select('-password');
         if (!req.user) {
             return res.status(401).json({ success: false, message: 'User not found' });
         }
         next();
     } catch (err) {
-        console.error('Auth error:', err);
+        if (err.name === 'TokenExpiredError') {
+            return res.status(401).json({ success: false, message: 'Token expired' });
+        }
         return res.status(401).json({ success: false, message: 'Not authorized, token failed' });
     }
 };
@@ -417,6 +424,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
 
 
 // Create PayPal Order
+// Create PayPal Order
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         // 1. Validate user and cart
@@ -436,11 +444,27 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // 2. Calculate total and validate items
-        const total = cart.items.reduce((sum, item) => {
-            const itemTotal = Number(item.price) * Number(item.quantity);
-            return sum + itemTotal;
-        }, 0);
+        // 2. Calculate total
+        let total = cart.items.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0);
+        let appliedDiscount = 0;
+
+        // 3. Coupon check logic START
+        if (req.body.couponCode) {
+            const coupon = await Coupon.findOne({ code: req.body.couponCode });
+            if (coupon && (!coupon.expiry || new Date() < coupon.expiry) && (!coupon.maxUses || coupon.currentUses < coupon.maxUses)) {
+                if (coupon.discountType === 'percent') {
+                    appliedDiscount = total * (coupon.discountValue / 100);
+                } else {
+                    appliedDiscount = coupon.discountValue;
+                }
+                total = Math.max(0, total - appliedDiscount);
+                coupon.currentUses += 1;
+                await coupon.save();
+            } else {
+                return res.status(400).json({ success: false, message: 'Invalid or expired coupon' });
+            }
+        }
+        // 3. Coupon check logic END
 
         if (total <= 0) {
             return res.status(400).json({
@@ -449,7 +473,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // 3. Create PayPal order request
+        // 4. Create PayPal order request
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer("return=representation");
         request.requestBody({
@@ -484,22 +508,24 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             }
         });
 
-        // 4. Execute PayPal request
+        // 5. Execute PayPal request
         console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
         const order = await client().execute(request);
         console.log('PayPal order response:', JSON.stringify(order, null, 2));
 
-        // 5. Extract approval URL
+        // 6. Extract approval URL
         const approveLink = order.result.links.find(link => link.rel === 'approve');
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
-        // 6. Save order to database
+        // 7. Save order to database
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
             totalAmount: total,
+            discountApplied: appliedDiscount,
+            couponCode: req.body.couponCode,
             paypalOrderId: order.result.id,
             status: 'pending',
             paymentDetails: {
@@ -510,7 +536,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
         await dbOrder.save();
 
-        // 7. Return response with all needed data
+        // 8. Return response with all needed data
         res.json({
             success: true,
             orderID: order.result.id,
@@ -535,7 +561,6 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             message: err.message
         };
 
-        // Add PayPal-specific error details if available
         if (err.response) {
             errorResponse.paypalError = {
                 status: err.response.statusCode,
@@ -878,113 +903,113 @@ app.get('/api/auth/me', protect, async (req, res) => {
 
 // Create Product with Images
 app.post('/api/products', protect, upload.array('images', 5), async (req, res) => {
-  try {
-    console.log('=== CREATE PRODUCT REQUEST ===');
-    console.log('User ID:', req.user.id);
-    console.log('Body:', req.body);
-    console.log('Files:', req.files);
+    try {
+        console.log('=== CREATE PRODUCT REQUEST ===');
+        console.log('User ID:', req.user.id);
+        console.log('Body:', req.body);
+        console.log('Files:', req.files);
 
-    const { title, description, versions, artist, category } = req.body;
+        const { title, description, versions, artist, category } = req.body;
 
-    // Validate required fields
-    if (!title || !description || !artist) {
-      return res.status(400).json({
-        success: false,
-        error: 'Title, description, and artist are required'
-      });
-    }
-
-    // Check images are uploaded
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'At least one image is required'
-      });
-    }
-
-    // Parse versions if it's a string
-    let parsedVersions = [];
-    if (versions) {
-      try {
-        parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
-      } catch (err) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid versions format'
-        });
-      }
-    }
-
-    // Validate versions array and each version object
-    if (!parsedVersions || !Array.isArray(parsedVersions) || parsedVersions.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'At least one version is required'
-      });
-    }
-    for (const v of parsedVersions) {
-      if (!v.name || v.price === undefined || !v.r2MusicFile) {
-        return res.status(400).json({
-          success: false,
-          error: 'Each version must have a name, price, and r2MusicFile'
-        });
-      }
-    }
-
-    // Convert price to number for each version
-    parsedVersions = parsedVersions.map(v => ({
-      ...v,
-      price: Number(v.price)
-    }));
-
-    // Process uploaded images for URLs and public IDs
-    const images = req.files.map(file => ({
-      url: file.path,
-      publicId: file.filename
-    }));
-
-    // Create new Product document
-    const product = new Product({
-      title,
-      description,
-      versions: parsedVersions,
-      images,
-      artist,
-      category: category || 'general',
-      createdBy: req.user.id
-    });
-
-    await product.save();
-
-    console.log('Product created successfully:', product._id);
-
-    res.status(201).json({
-      success: true,
-      product,
-      message: 'Product created successfully'
-    });
-
-  } catch (err) {
-    console.error('=== CREATE PRODUCT ERROR ===');
-    console.error('Error:', err);
-
-    // Clean up uploaded files on error
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        try {
-          await cloudinary.uploader.destroy(file.filename);
-        } catch (cleanupErr) {
-          console.error('Cleanup error:', cleanupErr);
+        // Validate required fields
+        if (!title || !description || !artist) {
+            return res.status(400).json({
+                success: false,
+                error: 'Title, description, and artist are required'
+            });
         }
-      }
-    }
 
-    res.status(500).json({
-      success: false,
-      error: 'Server error',
-      message: err.message
-    });
-  }
+        // Check images are uploaded
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'At least one image is required'
+            });
+        }
+
+        // Parse versions if it's a string
+        let parsedVersions = [];
+        if (versions) {
+            try {
+                parsedVersions = typeof versions === 'string' ? JSON.parse(versions) : versions;
+            } catch (err) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid versions format'
+                });
+            }
+        }
+
+        // Validate versions array and each version object
+        if (!parsedVersions || !Array.isArray(parsedVersions) || parsedVersions.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'At least one version is required'
+            });
+        }
+        for (const v of parsedVersions) {
+            if (!v.name || v.price === undefined || !v.r2MusicFile) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Each version must have a name, price, and r2MusicFile'
+                });
+            }
+        }
+
+        // Convert price to number for each version
+        parsedVersions = parsedVersions.map(v => ({
+            ...v,
+            price: Number(v.price)
+        }));
+
+        // Process uploaded images for URLs and public IDs
+        const images = req.files.map(file => ({
+            url: file.path,
+            publicId: file.filename
+        }));
+
+        // Create new Product document
+        const product = new Product({
+            title,
+            description,
+            versions: parsedVersions,
+            images,
+            artist,
+            category: category || 'general',
+            createdBy: req.user.id
+        });
+
+        await product.save();
+
+        console.log('Product created successfully:', product._id);
+
+        res.status(201).json({
+            success: true,
+            product,
+            message: 'Product created successfully'
+        });
+
+    } catch (err) {
+        console.error('=== CREATE PRODUCT ERROR ===');
+        console.error('Error:', err);
+
+        // Clean up uploaded files on error
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                try {
+                    await cloudinary.uploader.destroy(file.filename);
+                } catch (cleanupErr) {
+                    console.error('Cleanup error:', cleanupErr);
+                }
+            }
+        }
+
+        res.status(500).json({
+            success: false,
+            error: 'Server error',
+            message: err.message
+        });
+    }
 });
 
 
@@ -1173,11 +1198,11 @@ app.delete('/api/products/:id', protect, async (req, res) => {
             return res.status(404).json({
                 success: false,
                 error: 'Product not found'
-                });
-            }
+            });
+        }
 
         // Check if user owns the product or is admin
-       
+
 
         // Delete images from Cloudinary
         for (const image of product.images) {
