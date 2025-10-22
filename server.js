@@ -428,7 +428,8 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
             if (!version || !version.r2MusicFile) continue;
 
             // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
-            const url = getSignedDownloadUrl(version.r2MusicFile);
+            const url = generateFileUrl(version.r2MusicFile);
+
 
             // ⭐ Add to itemsWithDownloadLinks
             itemsWithDownloadLinks.push({
