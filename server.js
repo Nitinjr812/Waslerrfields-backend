@@ -11,6 +11,7 @@ const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const fetch = require('node-fetch');
 const s3 = require('./config/r2');
+const { generateFileUrl } = require('./utils/fileUrlGenerator');
 
 // Initialize app
 const app = express();
