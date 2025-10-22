@@ -347,40 +347,40 @@ app.put('/api/cart', protect, async (req, res) => {
 });
 
 app.post('/api/coupons/validate', protect, async (req, res) => {
-  try {
-    const { code } = req.body;
+    try {
+        const { code } = req.body;
 
-    if (!code) {
-      return res.status(400).json({ success: false, message: 'Coupon code is required' });
+        if (!code) {
+            return res.status(400).json({ success: false, message: 'Coupon code is required' });
+        }
+
+        // Find active coupon by code
+        const coupon = await Coupon.findOne({ code, isActive: true });
+
+        if (!coupon) {
+            return res.status(400).json({ success: false, message: 'Invalid coupon code' });
+        }
+
+        const now = new Date();
+
+        if (coupon.validFrom && coupon.validFrom > now) {
+            return res.status(400).json({ success: false, message: 'Coupon not valid yet' });
+        }
+
+        if (coupon.validUntil && coupon.validUntil < now) {
+            return res.status(400).json({ success: false, message: 'Coupon has expired' });
+        }
+
+        // Return discount details
+        res.json({
+            success: true,
+            discountPercentage: coupon.discountPercentage,
+            discountAmount: coupon.discountPercentage,  // frontend can calculate with total
+            message: 'Coupon applied successfully',
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Server error validating coupon', error: error.message });
     }
-
-    // Find active coupon by code
-    const coupon = await Coupon.findOne({ code, isActive: true });
-
-    if (!coupon) {
-      return res.status(400).json({ success: false, message: 'Invalid coupon code' });
-    }
-
-    const now = new Date();
-
-    if (coupon.validFrom && coupon.validFrom > now) {
-      return res.status(400).json({ success: false, message: 'Coupon not valid yet' });
-    }
-
-    if (coupon.validUntil && coupon.validUntil < now) {
-      return res.status(400).json({ success: false, message: 'Coupon has expired' });
-    }
-
-    // Return discount details
-    res.json({
-      success: true,
-      discountPercentage: coupon.discountPercentage,
-      discountAmount: coupon.discountPercentage,  // frontend can calculate with total
-      message: 'Coupon applied successfully',
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error validating coupon', error: error.message });
-  }
 });
 // Payment Routes
 const { client } = require('./config/paypal');
@@ -1378,6 +1378,46 @@ app.use((err, req, res, next) => {
         message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
 });
+app.get('/api/orders/:productId/reaccess', protect, async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const order = await Order.findOne({ user: req.user.id, 'items.productId': productId, status: 'completed' });
+
+        if (!order) {
+            return res.status(403).json({ success: false, message: 'You must purchase this product first.' });
+        }
+
+        // Find product’s file from versions to generate new signed URL
+        const product = await Product.findById(productId);
+        if (!product || !product.versions?.length) {
+            return res.status(404).json({ success: false, message: 'Product not found.' });
+        }
+
+        const fileKey = product.versions[0].r2MusicFile;
+        if (!fileKey) {
+            return res.status(400).json({ success: false, message: 'No download file available.' });
+        }
+
+        // Use same Cloudflare link generator as in payment capture route
+        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
+        const workerRes = await fetch(workerUrl, {
+            headers: { 'API-Key': process.env.CLOUDFLARE_API_SECRET }
+        });
+
+        if (!workerRes.ok) throw new Error('Failed to generate access link.');
+        const { url } = JSON.parse(await workerRes.text());
+
+        return res.json({
+            success: true,
+            message: 'Access granted! You already purchased this product.',
+            downloadLink: url,
+        });
+    } catch (err) {
+        console.error('Error in reaccess route:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 
 // 404 handler
 app.use('*', (req, res) => {
