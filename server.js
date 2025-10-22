@@ -435,7 +435,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
             const version = product.versions.find(v => v.name === item.version) || product.versions[0];
             if (!version || !version.r2MusicFile) continue;
 
-            const url = getSignedDownloadUrl(version.r2MusicFile);  // Yeh function baad me define karna hai (below)
+            const url = generateFileUrl(version.r2MusicFile);  // Yeh function baad me define karna hai (below)
 
             downloadLinks.push({
                 title: product.title,
@@ -901,10 +901,7 @@ app.delete('/api/cart', protect, async (req, res) => {
 
 
 
-// Test Route
-app.get('/api/test', (req, res) => {
-    res.json({ message: "API Working!", timestamp: new Date().toISOString() });
-});
+ 
 
 // Auth Routes
 app.post('/api/auth/register', [
@@ -1379,44 +1376,30 @@ app.use((err, req, res, next) => {
     });
 });
 app.get('/api/orders/:productId/reaccess', protect, async (req, res) => {
-    try {
-        const { productId } = req.params;
-        const order = await Order.findOne({ user: req.user.id, 'items.productId': productId, status: 'completed' });
+    const { productId } = req.params;
 
-        if (!order) {
-            return res.status(403).json({ success: false, message: 'You must purchase this product first.' });
-        }
-
-        // Find product’s file from versions to generate new signed URL
-        const product = await Product.findById(productId);
-        if (!product || !product.versions?.length) {
-            return res.status(404).json({ success: false, message: 'Product not found.' });
-        }
-
-        const fileKey = product.versions[0].r2MusicFile;
-        if (!fileKey) {
-            return res.status(400).json({ success: false, message: 'No download file available.' });
-        }
-
-        // Use same Cloudflare link generator as in payment capture route
-        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
-        const workerRes = await fetch(workerUrl, {
-            headers: { 'API-Key': process.env.CLOUDFLARE_API_SECRET }
-        });
-
-        if (!workerRes.ok) throw new Error('Failed to generate access link.');
-        const { url } = JSON.parse(await workerRes.text());
-
-        return res.json({
-            success: true,
-            message: 'Access granted! You already purchased this product.',
-            downloadLink: url,
-        });
-    } catch (err) {
-        console.error('Error in reaccess route:', err);
-        res.status(500).json({ success: false, message: err.message });
+    // Logic to find user order and check if purchased
+    const order = await Order.findOne({ user: req.user.id, 'items.productId': productId, status: 'completed' });
+    if (!order) {
+        return res.status(403).json({ success: false, message: 'You need to purchase this item first.' });
     }
+
+    // Purchase verified, ab correct file ka URL generate karna hai
+    // Maan lo product file ka naam tumhe order.items me milta hai (jaise order.items[0].filename)
+    const purchasedItem = order.items.find(item => item.productId === productId);
+    if (!purchasedItem) {
+        return res.status(404).json({ success: false, message: 'Product details not found in order.' });
+    }
+
+    const fileUrl = generateFileUrl(purchasedItem.filename);
+
+    res.json({
+        success: true,
+        downloadLink: fileUrl,
+        message: 'Access granted! Your purchased file is ready.'
+    });
 });
+
 
 
 // 404 handler
