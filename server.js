@@ -397,7 +397,6 @@ function getSignedDownloadUrl(fileKey) {
     };
     return s3.getSignedUrl('getObject', params);
 }
-
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -417,9 +416,44 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 .status(400)
                 .json({ success: false, message: "Order total must be zero for free order" });
 
+        // ⭐ PEHLE download links generate karo
+        const itemsWithDownloadLinks = [];
+        const downloadLinks = [];
+        
+        for (const item of cart.items) {
+            const product = await Product.findById(item.productId);
+            if (!product) continue;
+
+            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
+            if (!version || !version.r2MusicFile) continue;
+
+            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
+            const url = getSignedDownloadUrl(version.r2MusicFile);
+
+            // ⭐ Add to itemsWithDownloadLinks
+            itemsWithDownloadLinks.push({
+                productId: item.productId,
+                title: item.title,
+                artist: item.artist,
+                price: item.price,
+                quantity: item.quantity,
+                version: item.version,
+                image: item.image,
+                downloadLink: url  // ⭐ Use 'url' variable here
+            });
+
+            // Add to downloadLinks array for response
+            downloadLinks.push({
+                title: product.title,
+                artist: product.artist,
+                url,
+            });
+        }
+
+        // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
-            items: cart.items,
+            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
@@ -428,26 +462,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         await order.save();
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // Download links demo logic — customize as per your media setup:
-        const downloadLinks = [];
-        for (const item of cart.items) {
-            const product = await Product.findById(item.productId);
-            if (!product) continue;
-
-            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
-            if (!version || !version.r2MusicFile) continue;
-
-            const url = generateFileUrl(version.r2MusicFile);  // Yeh function baad me define karna hai (below)
-
-            downloadLinks.push({
-                title: product.title,
-                artist: product.artist,
-                url,
-            });
-        }
-
-
-        // Send a confirmation email if needed, then return:
+        // Send response
         res.json({
             success: true,
             message: "Free order placed!",
@@ -459,7 +474,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-
 
 
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
@@ -903,7 +917,7 @@ app.delete('/api/cart', protect, async (req, res) => {
 
 
 
- 
+
 
 // Auth Routes
 app.post('/api/auth/register', [
@@ -1410,7 +1424,7 @@ app.use('*', (req, res) => {
         success: false,
         message: `Route ${req.originalUrl} not found`
     });
-}); 
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
