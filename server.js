@@ -157,7 +157,8 @@ const orderSchema = new mongoose.Schema({
         artist: { type: String, required: true },
         price: { type: Number, required: true },
         image: { type: String },
-        quantity: { type: Number, default: 1 }
+        quantity: { type: Number, default: 1 },
+        downloadLink: { type: String }
     }],
     totalAmount: { type: Number, required: true },
     paypalOrderId: { type: String, required: true },
