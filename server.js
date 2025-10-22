@@ -1409,8 +1409,7 @@ app.use('*', (req, res) => {
         success: false,
         message: `Route ${req.originalUrl} not found`
     });
-});
-
+}); 
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
