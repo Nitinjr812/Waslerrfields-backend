@@ -734,22 +734,24 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
 
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
-  try {
-    const orders = await OrdersModel.find({ userId: req.user.id }).lean();
+    try {
+        const orders = await Order.find({ user: req.user.id })
+            .sort({ createdAt: -1 });
 
-    const ordersWithDownloadLinks = orders.map(order => ({
-      ...order,
-      items: order.items.map(item => ({
-        ...item,
-        downloadLink: generateFileUrl(item.filename)
-      }))
-    }));
-
-    res.json({ orders: ordersWithDownloadLinks });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
-  }
+        res.json({
+            success: true,
+            orders
+        });
+    } catch (err) {
+        console.error('Get orders error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get orders',
+            message: err.message
+        });
+    }
 });
+
 // Get Single Order
 app.get('/api/orders/:id', protect, async (req, res) => {
     try {
