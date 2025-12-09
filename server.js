@@ -185,7 +185,7 @@ const productSchema = new mongoose.Schema({
         publicId: { type: String, required: true }
     }],
     artist: { type: String, required: true },
-    category: { type: String, default: 'General' },
+    category: { type: String, default: 'general' },
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
@@ -419,7 +419,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         // ⭐ PEHLE download links generate karo
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
-        
+
         for (const item of cart.items) {
             const product = await Product.findById(item.productId);
             if (!product) continue;
@@ -476,7 +476,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
     }
 });
 
-
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         // 1. Validate user and cart
@@ -484,7 +483,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         if (!user) {
             return res.status(404).json({
                 success: false,
-                message: 'User not found'
+                message: 'User not found',
             });
         }
 
@@ -492,114 +491,134 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         if (!cart || cart.items.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: 'Cart is empty'
+                message: 'Cart is empty',
             });
         }
 
-        // 2. Calculate total and validate items
-        const total = cart.items.reduce((sum, item) => {
+        // 2. Extra amount (optional) from frontend
+        const extraAmount = Number(req.body.extraAmount || 0);
+
+        // 3. Calculate base total from cart items
+        const baseTotal = cart.items.reduce((sum, item) => {
             const itemTotal = Number(item.price) * Number(item.quantity);
             return sum + itemTotal;
         }, 0);
 
+        // 4. Final total = products total + extraAmount
+        const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
+
         if (total <= 0) {
             return res.status(400).json({
                 success: false,
-                message: 'Invalid order total'
+                message: 'Invalid order total',
             });
         }
 
-        // 3. Create PayPal order request
+        // 5. Create PayPal order request
         const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer("return=representation");
+        request.prefer('return=representation');
         request.requestBody({
             intent: 'CAPTURE',
-            purchase_units: [{
-                amount: {
-                    currency_code: 'USD',
-                    value: total.toFixed(2),
-                    breakdown: {
-                        item_total: {
-                            currency_code: 'USD',
-                            value: total.toFixed(2)
-                        }
-                    }
-                },
-                items: cart.items.map(item => ({
-                    name: `${item.title} by ${item.artist}`,
-                    unit_amount: {
+            purchase_units: [
+                {
+                    amount: {
                         currency_code: 'USD',
-                        value: Number(item.price).toFixed(2)
+                        value: total.toFixed(2),
+                        // breakdown optional but should match value if used
+                        breakdown: {
+                            item_total: {
+                                currency_code: 'USD',
+                                value: baseTotal.toFixed(2),
+                            },
+                            // extraAmount mapped as handling so PayPal sum = item_total + handling
+                            ...(extraAmount > 0 && {
+                                handling: {
+                                    currency_code: 'USD',
+                                    value: extraAmount.toFixed(2),
+                                },
+                            }),
+                        },
                     },
-                    quantity: item.quantity.toString(),
-                    sku: item.productId
-                }))
-            }],
+                    items: cart.items.map((item) => ({
+                        name: `${item.title} by ${item.artist}`,
+                        unit_amount: {
+                            currency_code: 'USD',
+                            value: Number(item.price).toFixed(2),
+                        },
+                        quantity: item.quantity.toString(),
+                        sku: item.productId,
+                    })),
+                },
+            ],
             application_context: {
                 brand_name: 'Waslerr',
                 user_action: 'PAY_NOW',
                 return_url: `${req.headers.origin}/checkout/success`,
                 cancel_url: `${req.headers.origin}/cart`,
-                shipping_preference: 'NO_SHIPPING'
-            }
+                shipping_preference: 'NO_SHIPPING',
+            },
         });
 
-        // 4. Execute PayPal request
-        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
+        // 6. Execute PayPal request
+        console.log(
+            'Creating PayPal order with request:',
+            JSON.stringify(request.body, null, 2)
+        );
         const order = await client().execute(request);
         console.log('PayPal order response:', JSON.stringify(order, null, 2));
 
-        // 5. Extract approval URL
-        const approveLink = order.result.links.find(link => link.rel === 'approve');
+        // 7. Extract approval URL
+        const approveLink = order.result.links.find((link) => link.rel === 'approve');
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
-        // 6. Save order to database
+        // 8. Save order to database (with extraAmount)
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
-            totalAmount: total,
+            totalAmount: total,          // final amount charged
+            baseAmount: baseTotal,       // optional: sirf products ka total
+            extraAmount: extraAmount,    // optional: user ka extra pay
             paypalOrderId: order.result.id,
             status: 'pending',
             paymentDetails: {
                 create_time: order.result.create_time,
-                links: order.result.links
-            }
+                links: order.result.links,
+            },
         });
 
         await dbOrder.save();
 
-        // 7. Return response with all needed data
+        // 9. Return response with all needed data
         res.json({
             success: true,
             orderID: order.result.id,
-            approvalUrl: approveLink.href,  // This is what your frontend needs
+            approvalUrl: approveLink.href,
             paypalResponse: {
                 id: order.result.id,
                 status: order.result.status,
-                create_time: order.result.create_time
-            }
+                create_time: order.result.create_time,
+            },
         });
-
     } catch (err) {
         console.error('PayPal order error:', {
             message: err.message,
             stack: err.stack,
-            response: err.response || null
+            response: err.response || null,
         });
 
         const errorResponse = {
             success: false,
             error: 'Failed to create PayPal order',
-            message: err.message
+            message: err.message,
         };
 
         // Add PayPal-specific error details if available
         if (err.response) {
             errorResponse.paypalError = {
                 status: err.response.statusCode,
-                details: err.response.result
+                details: err.response.result,
             };
         }
 
@@ -1076,7 +1095,7 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
             versions: parsedVersions,
             images,
             artist,
-            category: category || 'General',
+            category: category || 'general',
             createdBy: req.user.id
         });
 
