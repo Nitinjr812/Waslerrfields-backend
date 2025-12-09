@@ -185,7 +185,7 @@ const productSchema = new mongoose.Schema({
         publicId: { type: String, required: true }
     }],
     artist: { type: String, required: true },
-    category: { type: String, default: 'general' },
+    category: { type: String, default: 'General' },
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
@@ -1076,7 +1076,7 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
             versions: parsedVersions,
             images,
             artist,
-            category: category || 'general',
+            category: category || 'General',
             createdBy: req.user.id
         });
 
