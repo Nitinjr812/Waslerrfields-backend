@@ -419,7 +419,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         // ⭐ PEHLE download links generate karo
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
-
+        
         for (const item of cart.items) {
             const product = await Product.findById(item.productId);
             if (!product) continue;
@@ -477,153 +477,120 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
 });
 
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
-    try {
-        // 1. Validate user and cart
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: 'User not found',
-            });
-        }
-
-        const cart = await Cart.findOne({ user: req.user.id });
-        if (!cart || cart.items.length === 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Cart is empty',
-            });
-        }
-
-        // 2. Extra amount (optional) from frontend
-        const extraAmount = Number(req.body.extraAmount || 0);
-
-        // 3. Calculate base total from cart items
-        const baseTotal = cart.items.reduce((sum, item) => {
-            const itemTotal = Number(item.price) * Number(item.quantity);
-            return sum + itemTotal;
-        }, 0);
-
-        // 4. Final total = products total + extraAmount
-        const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
-
-        if (total <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid order total',
-            });
-        }
-
-        // 5. Create PayPal order request
-        const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer('return=representation');
-        request.requestBody({
-            intent: 'CAPTURE',
-            purchase_units: [
-                {
-                    amount: {
-                        currency_code: 'USD',
-                        value: total.toFixed(2),
-                        // breakdown optional but should match value if used
-                        breakdown: {
-                            item_total: {
-                                currency_code: 'USD',
-                                value: baseTotal.toFixed(2),
-                            },
-                            // extraAmount mapped as handling so PayPal sum = item_total + handling
-                            ...(extraAmount > 0 && {
-                                handling: {
-                                    currency_code: 'USD',
-                                    value: extraAmount.toFixed(2),
-                                },
-                            }),
-                        },
-                    },
-                    items: cart.items.map((item) => ({
-                        name: `${item.title} by ${item.artist}`,
-                        unit_amount: {
-                            currency_code: 'USD',
-                            value: Number(item.price).toFixed(2),
-                        },
-                        quantity: item.quantity.toString(),
-                        sku: item.productId,
-                    })),
-                },
-            ],
-            application_context: {
-                brand_name: 'Waslerr',
-                user_action: 'PAY_NOW',
-                return_url: `${req.headers.origin}/checkout/success`,
-                cancel_url: `${req.headers.origin}/cart`,
-                shipping_preference: 'NO_SHIPPING',
-            },
-        });
-
-        // 6. Execute PayPal request
-        console.log(
-            'Creating PayPal order with request:',
-            JSON.stringify(request.body, null, 2)
-        );
-        const order = await client().execute(request);
-        console.log('PayPal order response:', JSON.stringify(order, null, 2));
-
-        // 7. Extract approval URL
-        const approveLink = order.result.links.find((link) => link.rel === 'approve');
-        if (!approveLink) {
-            throw new Error('No approval URL found in PayPal response');
-        }
-
-        // 8. Save order to database (with extraAmount)
-        const dbOrder = new Order({
-            user: req.user.id,
-            items: cart.items,
-            totalAmount: total,          // final amount charged
-            baseAmount: baseTotal,       // optional: sirf products ka total
-            extraAmount: extraAmount,    // optional: user ka extra pay
-            paypalOrderId: order.result.id,
-            status: 'pending',
-            paymentDetails: {
-                create_time: order.result.create_time,
-                links: order.result.links,
-            },
-        });
-
-        await dbOrder.save();
-
-        // 9. Return response with all needed data
-        res.json({
-            success: true,
-            orderID: order.result.id,
-            approvalUrl: approveLink.href,
-            paypalResponse: {
-                id: order.result.id,
-                status: order.result.status,
-                create_time: order.result.create_time,
-            },
-        });
-    } catch (err) {
-        console.error('PayPal order error:', {
-            message: err.message,
-            stack: err.stack,
-            response: err.response || null,
-        });
-
-        const errorResponse = {
-            success: false,
-            error: 'Failed to create PayPal order',
-            message: err.message,
-        };
-
-        // Add PayPal-specific error details if available
-        if (err.response) {
-            errorResponse.paypalError = {
-                status: err.response.statusCode,
-                details: err.response.result,
-            };
-        }
-
-        res.status(500).json(errorResponse);
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
+
+    const cart = await Cart.findOne({ user: req.user.id });
+    if (!cart || cart.items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Cart is empty' });
+    }
+
+    const extraAmount = Number(req.body.extraAmount || 0);
+
+    const baseTotal = cart.items.reduce((sum, item) => {
+      const itemTotal = Number(item.price) * Number(item.quantity);
+      return sum + itemTotal;
+    }, 0);
+
+    const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
+
+    if (total <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order total',
+      });
+    }
+
+    const request = new paypal.orders.OrdersCreateRequest();
+    request.prefer('return=representation');
+    request.requestBody({
+      intent: 'CAPTURE',
+      purchase_units: [
+        {
+          amount: {
+            currency_code: 'USD',
+            value: total.toFixed(2), // sirf yahi, breakdown hata diya
+          },
+          items: cart.items.map((item) => ({
+            name: `${item.title} by ${item.artist}`,
+            unit_amount: {
+              currency_code: 'USD',
+              value: Number(item.price).toFixed(2),
+            },
+            quantity: item.quantity.toString(),
+            sku: item.productId,
+          })),
+        },
+      ],
+      application_context: {
+        brand_name: 'Waslerr',
+        user_action: 'PAY_NOW',
+        return_url: `${req.headers.origin}/checkout/success`,
+        cancel_url: `${req.headers.origin}/cart`,
+        shipping_preference: 'NO_SHIPPING',
+      },
+    });
+
+    console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
+    const order = await client().execute(request);
+    console.log('PayPal order response:', JSON.stringify(order, null, 2));
+
+    const approveLink = order.result.links.find((link) => link.rel === 'approve');
+    if (!approveLink) {
+      throw new Error('No approval URL found in PayPal response');
+    }
+
+    const dbOrder = new Order({
+      user: req.user.id,
+      items: cart.items,
+      totalAmount: total,
+      baseAmount: baseTotal,
+      extraAmount: extraAmount,
+      paypalOrderId: order.result.id,
+      status: 'pending',
+      paymentDetails: {
+        create_time: order.result.create_time,
+        links: order.result.links,
+      },
+    });
+
+    await dbOrder.save();
+
+    res.json({
+      success: true,
+      orderID: order.result.id,
+      approvalUrl: approveLink.href,
+      paypalResponse: {
+        id: order.result.id,
+        status: order.result.status,
+        create_time: order.result.create_time,
+      },
+    });
+  } catch (err) {
+    console.error('PayPal order error:', {
+      message: err.message,
+      stack: err.stack,
+      response: err.response || null,
+    });
+
+    const errorResponse = {
+      success: false,
+      error: 'Failed to create PayPal order',
+      message: err.message,
+    };
+
+    if (err.response) {
+      errorResponse.paypalError = {
+        status: err.response.statusCode,
+        details: err.response.result,
+      };
+    }
+
+    res.status(500).json(errorResponse);
+  }
 });
 
 // Capture PayPal Order
