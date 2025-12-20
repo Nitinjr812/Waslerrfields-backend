@@ -1028,12 +1028,7 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
         }
 
         // Validate versions array and each version object
-        if (!parsedVersions || !Array.isArray(parsedVersions) || parsedVersions.length === 0) {
-            return res.status(400).json({
-                success: false,
-                error: 'At least one version is required'
-            });
-        }
+        
         for (const v of parsedVersions) {
             if (!v.name || v.price === undefined || !v.r2MusicFile) {
                 return res.status(400).json({
