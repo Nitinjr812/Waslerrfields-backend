@@ -1365,7 +1365,7 @@ app.get('/api/admin/orders', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-``
+
 // Basic route
 app.get("/", (req, res) => {
     res.json({
