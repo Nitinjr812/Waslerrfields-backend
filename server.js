@@ -411,10 +411,10 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
             (sum, item) => sum + Number(item.price) * Number(item.quantity),
             0
         );
-        // if (total !== 0)
-        //     return res
-        //         .status(400)
-        //         .json({ success: false, message: "Order total must be zero for free order" });
+        if (total !== 0)
+            return res
+                .status(400)
+                .json({ success: false, message: "Order total must be zero for free order" });
 
         // ⭐ PEHLE download links generate karo
         const itemsWithDownloadLinks = [];
