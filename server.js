@@ -1346,7 +1346,7 @@ app.get('/api/products/user/me', protect, async (req, res) => {
     }
 });
 // Admin: Get All Orders (paste karne ke liye jagah: capture-paypal-order route ke baad)
-app.get('/api/admin/orders', protect, async (req, res) => {
+app.get('/api/admin/orders', async (req, res) => {
     try {
         // Koi bhi logged-in user saare orders dekh sakega
 
