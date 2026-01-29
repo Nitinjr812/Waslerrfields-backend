@@ -1350,21 +1350,24 @@ app.get('/api/admin/orders', async (req, res) => {
     try {
         // Koi bhi logged-in user saare orders dekh sakega
 
-        const orders = await Order.find({})
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
+        const orders = await Order.find({
+            status: 'completed',
+            totalAmount: { $gt: 0 }
+        })
+                .populate('user', 'name email')  // User name + email populate
+                .sort({ createdAt: -1 })  // Latest first
+                .lean();
 
-        res.json({
-            success: true,
-            orders,
-            count: orders.length
-        });
-    } catch (err) {
-        console.error('Orders error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
+            res.json({
+                success: true,
+                orders,
+                count: orders.length
+            });
+        } catch (err) {
+            console.error('Orders error:', err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    });
 
 // Basic route
 app.get("/", (req, res) => {
