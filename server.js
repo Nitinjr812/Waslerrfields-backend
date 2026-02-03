@@ -1348,20 +1348,21 @@ app.get('/api/products/user/me', protect, async (req, res) => {
 // Admin: Get All Orders (paste karne ke liye jagah: capture-paypal-order route ke baad)
 app.get('/api/admin/orders', protect, async (req, res) => {
     try {
-        // Koi bhi logged-in user saare orders dekh sakega
-
+        console.log('🔥 Admin fetching orders...'); // Debug log
+        
         const orders = await Order.find({})
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
-
+            .populate('user', 'name email')
+            .sort({ createdAt: -1 }); // ← .lean() HATAYA!
+            
+        console.log(`✅ Found ${orders.length} orders`); // Debug log
+        
         res.json({
             success: true,
             orders,
             count: orders.length
         });
     } catch (err) {
-        console.error('Orders error:', err);
+        console.error('❌ Orders error:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
