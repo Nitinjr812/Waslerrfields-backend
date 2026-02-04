@@ -1346,22 +1346,18 @@ app.get('/api/products/user/me', protect, async (req, res) => {
     }
 });
 // Admin: Get All Orders (paste karne ke liye jagah: capture-paypal-order route ke baad)
-app.get('/api/admin/orders', protect, async (req, res) => {
+app.get('/api/admin/orders', async (req, res) => {
     try {
-        const orders = await Order.find({})
-            .populate('user', 'name email')
-            .sort({ createdAt: -1 })
-            .lean();
 
-        // 🔥 BACKEND DEBUG
-        console.log('🐛 TOTAL ORDERS:', orders.length);
-        console.log('🐛 STATUSES FOUND:', orders.map(o => o.status));
+        const orders = await Order.find({})
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
         res.json({
             success: true,
             orders,
-            count: orders.length,
-            debug: orders.map(o => ({ status: o.status })) // Frontend mein bhi dikhega
+            count: orders.length
         });
     } catch (err) {
         console.error('Orders error:', err);
@@ -1369,7 +1365,23 @@ app.get('/api/admin/orders', protect, async (req, res) => {
     }
 });
 
+app.get('/api/admin/orders/completed', async (req, res) => {
+    try {
+        const orders = await Order.find({ status: 'completed' })  // 🔥 Yahan filter!
+            .populate('user', 'name email')
+            .sort({ createdAt: -1 })
+            .lean();
 
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Completed orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 // Basic route
 app.get("/", (req, res) => {
     res.json({
