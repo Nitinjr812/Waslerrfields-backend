@@ -1385,6 +1385,35 @@ app.get('/api/admin/orders/completed', async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+// 🔥 DELETE ORDER ENDPOINT
+app.delete('/api/admin/orders/:id', async (req, res) => {
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        
+        // Admin auth check (simple)
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (!decoded.isAdmin) {
+            return res.status(403).json({ success: false, message: 'Admin access required' });
+        }
+
+        const { id } = req.params;
+        const deletedOrder = await Order.findByIdAndDelete(id);
+        
+        if (!deletedOrder) {
+            return res.status(404).json({ success: false, message: 'Order not found' });
+        }
+
+        res.json({
+            success: true,
+            message: 'Order deleted successfully',
+            deletedOrderId: id
+        });
+    } catch (err) {
+        console.error('Delete order error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // Basic route
 app.get("/", (req, res) => {
     res.json({
