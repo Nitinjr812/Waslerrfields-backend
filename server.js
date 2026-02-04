@@ -488,10 +488,12 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         }
 
         const extraAmount = Number(req.body.extraAmount || 0);
+
         const baseTotal = cart.items.reduce((sum, item) => {
             const itemTotal = Number(item.price) * Number(item.quantity);
             return sum + itemTotal;
         }, 0);
+
         const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
 
         if (total <= 0) {
@@ -501,7 +503,15 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // 🔥 PayPal order create (same rakho)
+        // 🔥 🔥 MAIN FIX - FILEKEY 100% GUARANTEE!
+        const itemsWithGuaranteedFileKey = cart.items.map(item => ({
+            ...item.toObject(),
+            fileKey: item.fileKey || `${(item.artist || 'unknown').replace(/[^a-z0-9]/gi, '-')}-${(item.title || 'track').replace(/[^a-z0-9]/gi, '-')}.mp3`
+        }));
+
+        console.log('🛒 SAVING ORDER WITH ITEMS:', JSON.stringify(itemsWithGuaranteedFileKey, null, 2));
+
+        // PayPal order create
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer('return=representation');
         request.requestBody({
@@ -511,14 +521,14 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                     currency_code: 'USD',
                     value: total.toFixed(2),
                 },
-                items: cart.items.map((item) => ({
+                items: itemsWithGuaranteedFileKey.map((item) => ({
                     name: `${item.title} by ${item.artist}`,
                     unit_amount: {
                         currency_code: 'USD',
                         value: Number(item.price).toFixed(2),
                     },
                     quantity: item.quantity.toString(),
-                    sku: item.productId,
+                    sku: item.productId || item._id,
                 })),
             }],
             application_context: {
@@ -528,21 +538,18 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             },
         });
 
+        console.log('Creating PayPal order...');
         const order = await client().execute(request);
         const approveLink = order.result.links.find((link) => link.rel === 'approve');
+
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
-        // 🔥 ITEMS MEIN FILEKEY ENSURE KARO
-        const itemsWithFileKey = cart.items.map(item => ({
-            ...item.toObject(), // Mongoose object ko plain karo
-            fileKey: item.fileKey || `${item.artist}-${item.title}.mp3` // 🔥 CRITICAL
-        }));
-
+        // 🔥 ORDER SAVE WITH GUARANTEED FILEKEYS
         const dbOrder = new Order({
             user: req.user.id,
-            items: itemsWithFileKey, // 🔥 FILEKEY WAALE ITEMS
+            items: itemsWithGuaranteedFileKey,  // ✅ YE 2 ITEMS SAVE HOGE
             totalAmount: total,
             baseAmount: baseTotal,
             extraAmount: extraAmount,
@@ -555,6 +562,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
         await dbOrder.save();
+        console.log(`✅ Order saved with ${itemsWithGuaranteedFileKey.length} items!`);
 
         res.json({
             success: true,
@@ -562,13 +570,18 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
     } catch (err) {
-        console.error('PayPal order error:', err);
+        console.error('❌ PayPal order error:', {
+            message: err.message,
+            stack: err.stack,
+        });
+
         res.status(500).json({
             success: false,
             message: err.message,
         });
     }
 });
+
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
         const { orderID } = req.body;
@@ -609,7 +622,7 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         const downloadLinks = await Promise.all(
             updatedOrder.items.map(async (item, index) => {
                 const fileKey = item.fileKey;
-                
+
                 if (!fileKey) {
                     console.log(`❌ No fileKey for "${item.title}"`);
                     return null;
@@ -633,9 +646,9 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
                     }
 
                     const { url } = JSON.parse(text);
-                    
+
                     console.log(`✅ SUCCESS: ${item.title}`);
-                    
+
                     return {
                         title: item.title,
                         artist: item.artist,
@@ -1303,20 +1316,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-                .populate('user', 'name email')  // User name + email populate
-                .sort({ createdAt: -1 })  // Latest first
-                .lean();
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
-            res.json({
-                success: true,
-                orders,
-                count: orders.length
-            });
-        } catch (err) {
-            console.error('Orders error:', err);
-            res.status(500).json({ success: false, message: err.message });
-        }
-    });
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1338,11 +1351,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-       
+
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-        
+
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
