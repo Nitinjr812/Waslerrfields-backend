@@ -157,7 +157,6 @@ const orderSchema = new mongoose.Schema({
         artist: { type: String, required: true },
         price: { type: Number, required: true },
         image: { type: String },
-        fileKey: { type: String, required: true },
         quantity: { type: Number, default: 1 },
         downloadLink: { type: String }
     }],
@@ -476,126 +475,125 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-// 🔥 CREATE-PAYPAL-ORDER (PERMANENT FIX)
+
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
-  try {
-    const cart = await Cart.findOne({ user: req.user.id });
-    if (!cart || !cart.items?.length) {
-      return res.status(400).json({ success: false, message: 'Cart empty' });
-    }
-
-    const extraAmount = Number(req.body.extraAmount || 0);
-    const baseTotal = cart.items.reduce((sum, item) => 
-      sum + (Number(item.price) * Number(item.quantity)), 0
-    );
-    const total = baseTotal + extraAmount;
-
-    // 🔥 PERMANENT FILEKEY GUARANTEE
-    const guaranteedItems = cart.items.map(item => ({
-      productId: item.productId || item._id,
-      title: item.title,
-      artist: item.artist,
-      price: Number(item.price),
-      quantity: Number(item.quantity),
-      image: item.image,
-      fileKey: item.fileKey || `${item.artist?.replace(/[^a-z0-9]/gi, '-')}-${item.title?.replace(/[^a-z0-9]/gi, '-')}.mp3`,
-      selectedVersionIndex: item.selectedVersionIndex
-    }));
-
-    console.log(`🛒 ORDER CREATE: ${guaranteedItems.length} items`, guaranteedItems.map(i => ({title: i.title, fileKey: i.fileKey})));
-
-    // PayPal
-    const request = new paypal.orders.OrdersCreateRequest();
-    request.requestBody({
-      intent: 'CAPTURE',
-      purchase_units: [{
-        amount: { currency_code: 'USD', value: total.toFixed(2) },
-        items: guaranteedItems.map(item => ({
-          name: `${item.artist} - ${item.title}`,
-          unit_amount: { currency_code: 'USD', value: item.price.toFixed(2) },
-          quantity: item.quantity.toString()
-        }))
-      }]
-    });
-
-    const order = await client().execute(request);
-    
-    // SAVE ORDER WITH GUARANTEED ITEMS
-    await Order.create({
-      user: req.user.id,
-      paypalOrderId: order.result.id,
-      items: guaranteedItems,  // 🔥 2 ITEMS WITH FILEKEY
-      totalAmount: total,
-      baseAmount: baseTotal,
-      extraAmount,
-      status: 'pending'
-    });
-
-    res.json({ success: true, orderID: order.result.id });
-  } catch (err) {
-    console.error('Create order error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// 🔥 CAPTURE-PAYPAL-ORDER (PERMANENT FIX)
-app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
-  try {
-    const { orderID } = req.body;
-    
-    // Capture payment
-    const request = new paypal.orders.OrdersCaptureRequest(orderID);
-    await client().execute(request);
-
-    // Get order with items
-    const order = await Order.findOne({ paypalOrderId: orderID, user: req.user.id });
-    console.log(`🎯 CAPTURE: Found ${order.items.length} items`, order.items.map(i => i.title));
-
-    // Generate ALL download links
-    const downloadLinks = await Promise.all(
-      order.items.map(async (item, index) => {
-        const fileKey = item.fileKey;
-        console.log(`🔗 #${index + 1} ${item.title}:`, fileKey);
-        
-        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
-        
-        const workerRes = await fetch(workerUrl, {
-          headers: { 'API-Key': process.env.CLOUDFLARE_API_SECRET }
-        });
-        
-        const text = await workerRes.text();
-        if (!workerRes.ok) {
-          console.log(`❌ Worker failed #${index + 1}:`, text);
-          return null;
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
         }
-        
-        const { url } = JSON.parse(text);
-        return {
-          title: item.title,
-          artist: item.artist,
-          downloadUrl: url
+
+        const cart = await Cart.findOne({ user: req.user.id });
+        if (!cart || cart.items.length === 0) {
+            return res.status(400).json({ success: false, message: 'Cart is empty' });
+        }
+
+        const extraAmount = Number(req.body.extraAmount || 0);
+
+        const baseTotal = cart.items.reduce((sum, item) => {
+            const itemTotal = Number(item.price) * Number(item.quantity);
+            return sum + itemTotal;
+        }, 0);
+
+        const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
+
+        if (total <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid order total',
+            });
+        }
+
+        const request = new paypal.orders.OrdersCreateRequest();
+        request.prefer('return=representation');
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [
+                {
+                    amount: {
+                        currency_code: 'USD',
+                        value: total.toFixed(2), // sirf yahi, breakdown hata diya
+                    },
+                    items: cart.items.map((item) => ({
+                        name: `${item.title} by ${item.artist}`,
+                        unit_amount: {
+                            currency_code: 'USD',
+                            value: Number(item.price).toFixed(2),
+                        },
+                        quantity: item.quantity.toString(),
+                        sku: item.productId,
+                    })),
+                },
+            ],
+            application_context: {
+                brand_name: 'Waslerr',
+                user_action: 'PAY_NOW',
+                return_url: `${req.headers.origin}/checkout/success`,
+                cancel_url: `${req.headers.origin}/cart`,
+                shipping_preference: 'NO_SHIPPING',
+            },
+        });
+
+        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
+        const order = await client().execute(request);
+        console.log('PayPal order response:', JSON.stringify(order, null, 2));
+
+        const approveLink = order.result.links.find((link) => link.rel === 'approve');
+        if (!approveLink) {
+            throw new Error('No approval URL found in PayPal response');
+        }
+
+        const dbOrder = new Order({
+            user: req.user.id,
+            items: cart.items,
+            totalAmount: total,
+            baseAmount: baseTotal,
+            extraAmount: extraAmount,
+            paypalOrderId: order.result.id,
+            status: 'pending',
+            paymentDetails: {
+                create_time: order.result.create_time,
+                links: order.result.links,
+            },
+        });
+
+        await dbOrder.save();
+
+        res.json({
+            success: true,
+            orderID: order.result.id,
+            approvalUrl: approveLink.href,
+            paypalResponse: {
+                id: order.result.id,
+                status: order.result.status,
+                create_time: order.result.create_time,
+            },
+        });
+    } catch (err) {
+        console.error('PayPal order error:', {
+            message: err.message,
+            stack: err.stack,
+            response: err.response || null,
+        });
+
+        const errorResponse = {
+            success: false,
+            error: 'Failed to create PayPal order',
+            message: err.message,
         };
-      })
-    );
 
-    const validLinks = downloadLinks.filter(Boolean);
-    console.log(`✅ Generated ${validLinks.length}/${order.items.length} links`);
+        if (err.response) {
+            errorResponse.paypalError = {
+                status: err.response.statusCode,
+                details: err.response.result,
+            };
+        }
 
-    // Update order status
-    await Order.findOneAndUpdate({ paypalOrderId: orderID }, { status: 'completed' });
-    await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
-
-    res.json({ 
-      success: true, 
-      downloadLinks: validLinks  // 🔥 YE 2 LINKS JAYENGE
-    });
-
-  } catch (err) {
-    console.error('Capture error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
+        res.status(500).json(errorResponse);
+    }
 });
 
+// Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
         const { orderID } = req.body;
@@ -607,12 +605,12 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // Capture payment
+        // Capture PayPal payment
         const request = new paypal.orders.OrdersCaptureRequest(orderID);
         request.requestBody({});
         const capture = await client().execute(request);
 
-        // Update order
+        // Update order in DB
         const updatedOrder = await Order.findOneAndUpdate(
             { paypalOrderId: orderID, user: req.user.id },
             {
@@ -629,22 +627,29 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // Clear cart
+        // Clear user's cart
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // 🔥 MAIN FIX: Direct items se fileKeys generate karo
-        const downloadLinks = await Promise.all(
-            updatedOrder.items.map(async (item, index) => {
-                const fileKey = item.fileKey;
+        // Get product versions to find r2MusicFile keys
+        const productIds = updatedOrder.items.map((item) => item.productId);
+        const products = await Product.find({ _id: { $in: productIds } });
 
-                if (!fileKey) {
-                    console.log(`❌ No fileKey for "${item.title}"`);
+        const downloadLinks = await Promise.all(
+            products.map(async (product, index) => {
+                const version = product.versions.find((v) => v.r2MusicFile);
+
+                if (!version) {
+                    console.log(`No r2MusicFile found for "${product.title}"`);
                     return null;
                 }
 
+                const fileKey = version.r2MusicFile;
                 const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
 
-                console.log(`🔗 Generating #${index + 1}: "${item.title}" -> ${fileKey}`);
+                console.log(`🔗 Song #${index + 1}: "${product.title}"`);
+                console.log(`🎯 fileKey: ${fileKey}`);
+                console.log(`🌐 Worker Link: ${workerUrl}`);
+                console.log(`🔑 API-Key Being Used: ${process.env.CLOUDFLARE_API_SECRET}`);
 
                 try {
                     const workerRes = await fetch(workerUrl, {
@@ -654,58 +659,76 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
                     });
 
                     const text = await workerRes.text();
+
                     if (!workerRes.ok) {
-                        console.log(`❌ Worker failed: ${text}`);
+                        console.log(`❌ Worker failed for ${fileKey}:`, workerRes.status, text);
                         return null;
                     }
 
                     const { url } = JSON.parse(text);
 
-                    console.log(`✅ SUCCESS: ${item.title}`);
+                    console.log(`✅ Success! File link generated: ${url}`);
 
                     return {
-                        title: item.title,
-                        artist: item.artist,
-                        downloadUrl: url  // 🔥 Frontend expects THIS
+                        title: product.title,
+                        artist: product.artist,
+                        url
                     };
                 } catch (err) {
-                    console.log(`❌ Error ${fileKey}:`, err.message);
+                    console.log(`❌ Exception talking to Cloudflare Worker for fileKey: ${fileKey}`, err);
                     return null;
                 }
             })
         );
 
+        // Filter valid links only
         const validLinks = downloadLinks.filter(Boolean);
-        console.log(`🎉 Generated ${validLinks.length}/${updatedOrder.items.length} links`);
 
-        // Email (same rakho)
+        // Send cute email with download links
         const emailHtml = `
-            <div style="font-family: Arial; max-width: 600px; margin: auto;">
-                <h2>🎉 Thanks ${updatedOrder.user.name}!</h2>
-                ${validLinks.map(link => `
-                    <div style="margin: 15px 0; padding: 15px; background: #1a1a1a; border-radius: 8px;">
-                        <strong>${link.title}</strong> by ${link.artist}<br/>
-                        <a href="${link.downloadUrl}" target="_blank" 
-                           style="background: #e53935; color: white; padding: 12px 24px; 
-                                  border-radius: 6px; text-decoration: none;">Download</a>
-                    </div>
-                `).join('')}
-                <p><small>Links expire in 10 minutes.</small></p>
-            </div>
-        `;
+      <div style="font-family: Arial; max-width: 600px; margin: auto;">
+        <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
+        <p>Here are your download links:</p>
+        ${validLinks.map(link => `
+          <div style="margin: 10px 0;">
+            <strong>${link.title} by ${link.artist}</strong> <br/>
+            <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
+              text-decoration: none;" href="${link.url}" target="_blank">Download</a>
+          </div>
+        `).join('')}
+        <p><small>Links expire in 10 minutes.</small></p>
+        <p>Stay awesome,<br/>Waslerr Team</p>
+      </div>
+    `;
 
-        await sendEmail(updatedOrder.user.email, `Your Waslerr Order #${updatedOrder._id}`, emailHtml);
+        await sendEmail(
+            updatedOrder.user.email,
+            `Your Waslerr Order #${updatedOrder._id}`,
+            emailHtml
+        );
 
         res.json({
             success: true,
-            downloadLinks: validLinks  // 🔥 YE FRONTEND KO JAYEGA
+            message: 'Payment captured and download link sent!',
+            order: updatedOrder,
+            capture: capture.result,
+            downloadLinks: validLinks
         });
-
     } catch (err) {
-        console.error('Capture error:', err);
+        console.error('❗ Payment capture error:', err);
+
+        if (orderID) {
+            await Order.findOneAndUpdate(
+                { paypalOrderId: orderID, user: req.user.id },
+                { status: 'failed' }
+            );
+        }
+
         res.status(500).json({
             success: false,
-            message: err.message
+            error: 'Failed to complete order',
+            message: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
         });
     }
 });
@@ -1330,20 +1353,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
+                .populate('user', 'name email')  // User name + email populate
+                .sort({ createdAt: -1 })  // Latest first
+                .lean();
 
-        res.json({
-            success: true,
-            orders,
-            count: orders.length
-        });
-    } catch (err) {
-        console.error('Orders error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
+            res.json({
+                success: true,
+                orders,
+                count: orders.length
+            });
+        } catch (err) {
+            console.error('Orders error:', err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    });
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1365,11 +1388,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-
+       
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-
+        
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
