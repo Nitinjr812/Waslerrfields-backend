@@ -157,6 +157,7 @@ const orderSchema = new mongoose.Schema({
         artist: { type: String, required: true },
         price: { type: Number, required: true },
         image: { type: String },
+        fileKey: { type: String, required: true },
         quantity: { type: Number, default: 1 },
         downloadLink: { type: String }
     }],
@@ -475,111 +476,124 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+// 🔥 CREATE-PAYPAL-ORDER (PERMANENT FIX)
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'User not found' });
-        }
-
-        const cart = await Cart.findOne({ user: req.user.id });
-        if (!cart || cart.items.length === 0) {
-            return res.status(400).json({ success: false, message: 'Cart is empty' });
-        }
-
-        const extraAmount = Number(req.body.extraAmount || 0);
-
-        const baseTotal = cart.items.reduce((sum, item) => {
-            const itemTotal = Number(item.price) * Number(item.quantity);
-            return sum + itemTotal;
-        }, 0);
-
-        const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
-
-        if (total <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid order total',
-            });
-        }
-
-        // 🔥 🔥 MAIN FIX - FILEKEY 100% GUARANTEE!
-        const itemsWithGuaranteedFileKey = cart.items.map(item => ({
-            ...item.toObject(),
-            fileKey: item.fileKey || `${(item.artist || 'unknown').replace(/[^a-z0-9]/gi, '-')}-${(item.title || 'track').replace(/[^a-z0-9]/gi, '-')}.mp3`
-        }));
-
-        console.log('🛒 SAVING ORDER WITH ITEMS:', JSON.stringify(itemsWithGuaranteedFileKey, null, 2));
-
-        // PayPal order create
-        const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer('return=representation');
-        request.requestBody({
-            intent: 'CAPTURE',
-            purchase_units: [{
-                amount: {
-                    currency_code: 'USD',
-                    value: total.toFixed(2),
-                },
-                items: itemsWithGuaranteedFileKey.map((item) => ({
-                    name: `${item.title} by ${item.artist}`,
-                    unit_amount: {
-                        currency_code: 'USD',
-                        value: Number(item.price).toFixed(2),
-                    },
-                    quantity: item.quantity.toString(),
-                    sku: item.productId || item._id,
-                })),
-            }],
-            application_context: {
-                brand_name: 'Waslerr',
-                user_action: 'PAY_NOW',
-                shipping_preference: 'NO_SHIPPING',
-            },
-        });
-
-        console.log('Creating PayPal order...');
-        const order = await client().execute(request);
-        const approveLink = order.result.links.find((link) => link.rel === 'approve');
-
-        if (!approveLink) {
-            throw new Error('No approval URL found in PayPal response');
-        }
-
-        // 🔥 ORDER SAVE WITH GUARANTEED FILEKEYS
-        const dbOrder = new Order({
-            user: req.user.id,
-            items: itemsWithGuaranteedFileKey,  // ✅ YE 2 ITEMS SAVE HOGE
-            totalAmount: total,
-            baseAmount: baseTotal,
-            extraAmount: extraAmount,
-            paypalOrderId: order.result.id,
-            status: 'pending',
-            paymentDetails: {
-                create_time: order.result.create_time,
-                links: order.result.links,
-            },
-        });
-
-        await dbOrder.save();
-        console.log(`✅ Order saved with ${itemsWithGuaranteedFileKey.length} items!`);
-
-        res.json({
-            success: true,
-            orderID: order.result.id  // Frontend ko sirf YE chahiye
-        });
-
-    } catch (err) {
-        console.error('❌ PayPal order error:', {
-            message: err.message,
-            stack: err.stack,
-        });
-
-        res.status(500).json({
-            success: false,
-            message: err.message,
-        });
+  try {
+    const cart = await Cart.findOne({ user: req.user.id });
+    if (!cart || !cart.items?.length) {
+      return res.status(400).json({ success: false, message: 'Cart empty' });
     }
+
+    const extraAmount = Number(req.body.extraAmount || 0);
+    const baseTotal = cart.items.reduce((sum, item) => 
+      sum + (Number(item.price) * Number(item.quantity)), 0
+    );
+    const total = baseTotal + extraAmount;
+
+    // 🔥 PERMANENT FILEKEY GUARANTEE
+    const guaranteedItems = cart.items.map(item => ({
+      productId: item.productId || item._id,
+      title: item.title,
+      artist: item.artist,
+      price: Number(item.price),
+      quantity: Number(item.quantity),
+      image: item.image,
+      fileKey: item.fileKey || `${item.artist?.replace(/[^a-z0-9]/gi, '-')}-${item.title?.replace(/[^a-z0-9]/gi, '-')}.mp3`,
+      selectedVersionIndex: item.selectedVersionIndex
+    }));
+
+    console.log(`🛒 ORDER CREATE: ${guaranteedItems.length} items`, guaranteedItems.map(i => ({title: i.title, fileKey: i.fileKey})));
+
+    // PayPal
+    const request = new paypal.orders.OrdersCreateRequest();
+    request.requestBody({
+      intent: 'CAPTURE',
+      purchase_units: [{
+        amount: { currency_code: 'USD', value: total.toFixed(2) },
+        items: guaranteedItems.map(item => ({
+          name: `${item.artist} - ${item.title}`,
+          unit_amount: { currency_code: 'USD', value: item.price.toFixed(2) },
+          quantity: item.quantity.toString()
+        }))
+      }]
+    });
+
+    const order = await client().execute(request);
+    
+    // SAVE ORDER WITH GUARANTEED ITEMS
+    await Order.create({
+      user: req.user.id,
+      paypalOrderId: order.result.id,
+      items: guaranteedItems,  // 🔥 2 ITEMS WITH FILEKEY
+      totalAmount: total,
+      baseAmount: baseTotal,
+      extraAmount,
+      status: 'pending'
+    });
+
+    res.json({ success: true, orderID: order.result.id });
+  } catch (err) {
+    console.error('Create order error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔥 CAPTURE-PAYPAL-ORDER (PERMANENT FIX)
+app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
+  try {
+    const { orderID } = req.body;
+    
+    // Capture payment
+    const request = new paypal.orders.OrdersCaptureRequest(orderID);
+    await client().execute(request);
+
+    // Get order with items
+    const order = await Order.findOne({ paypalOrderId: orderID, user: req.user.id });
+    console.log(`🎯 CAPTURE: Found ${order.items.length} items`, order.items.map(i => i.title));
+
+    // Generate ALL download links
+    const downloadLinks = await Promise.all(
+      order.items.map(async (item, index) => {
+        const fileKey = item.fileKey;
+        console.log(`🔗 #${index + 1} ${item.title}:`, fileKey);
+        
+        const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
+        
+        const workerRes = await fetch(workerUrl, {
+          headers: { 'API-Key': process.env.CLOUDFLARE_API_SECRET }
+        });
+        
+        const text = await workerRes.text();
+        if (!workerRes.ok) {
+          console.log(`❌ Worker failed #${index + 1}:`, text);
+          return null;
+        }
+        
+        const { url } = JSON.parse(text);
+        return {
+          title: item.title,
+          artist: item.artist,
+          downloadUrl: url
+        };
+      })
+    );
+
+    const validLinks = downloadLinks.filter(Boolean);
+    console.log(`✅ Generated ${validLinks.length}/${order.items.length} links`);
+
+    // Update order status
+    await Order.findOneAndUpdate({ paypalOrderId: orderID }, { status: 'completed' });
+    await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
+
+    res.json({ 
+      success: true, 
+      downloadLinks: validLinks  // 🔥 YE 2 LINKS JAYENGE
+    });
+
+  } catch (err) {
+    console.error('Capture error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
