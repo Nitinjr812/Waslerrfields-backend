@@ -1346,38 +1346,25 @@ app.get('/api/products/user/me', protect, async (req, res) => {
     }
 });
 // Admin: Get All Orders (paste karne ke liye jagah: capture-paypal-order route ke baad)
-app.get('/api/admin/orders', async (req, res) => {
+app.get('/api/admin/orders', protect, async (req, res) => {
     try {
-        console.log('🔥 Admin fetching orders...');
-        
-        // 🔥 DEBUG: Raw orders check karo
-        const allOrders = await Order.find({})
+        const orders = await Order.find({})
             .populate('user', 'name email')
-            .sort({ createdAt: -1 });
-        
-        console.log(`✅ Total orders found: ${allOrders.length}`);
-        
-        // 🔥 DEBUG: Status check karo
-        const completedOrders = allOrders.filter(order => order.status === 'completed');
-        console.log(`🎯 Completed orders: ${completedOrders.length}`);
-        console.log('🔍 First completed order:', completedOrders[0]);
-        
-        // 🔥 Ye bhi check karo - 0$ wale
-        const zeroDollarOrders = allOrders.filter(order => 
-            order.status === 'completed' && Number(order.totalAmount) === 0
-        );
-        console.log(`💰 Zero $ completed: ${zeroDollarOrders.length}`);
-        
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // 🔥 BACKEND DEBUG
+        console.log('🐛 TOTAL ORDERS:', orders.length);
+        console.log('🐛 STATUSES FOUND:', orders.map(o => o.status));
+
         res.json({
             success: true,
-            orders: allOrders,  // SAB orders bhej rahe hain
-            count: allOrders.length,
-            completedCount: completedOrders.length,
-            zeroDollarCount: zeroDollarOrders.length
+            orders,
+            count: orders.length,
+            debug: orders.map(o => ({ status: o.status })) // Frontend mein bhi dikhega
         });
-        
     } catch (err) {
-        console.error('❌ Orders error:', err);
+        console.error('Orders error:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
