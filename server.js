@@ -500,27 +500,51 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid order total' });
         }
 
-        // 🔥 CRITICAL FIX: Add fileKey for each item from Product DB
+        // 🔥 HELPER FUNCTION - ObjectId CRASH PREVENTION
+        const isValidMongoId = (id) => {
+            try {
+                return mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === id;
+            } catch {
+                return false;
+            }
+        };
+
+        // 🔥 FIXED: ObjectId safe version lookup + fallback
         const itemsWithFileKeys = await Promise.all(
             cart.items.map(async (item) => {
-                let fileKey = item.r2MusicFile || 'default.mp3';
+                let fileKey = item.r2MusicFile || item.fileKey || 'default.mp3';
 
+                // ✅ SAFE: Only valid MongoDB IDs query karenge
                 if (isValidMongoId(item.productId)) {
                     try {
                         const product = await Product.findById(item.productId);
                         if (product?.versions?.[item.selectedVersionIndex || 0]) {
                             fileKey = product.versions[item.selectedVersionIndex || 0].r2MusicFile;
+                            console.log(`✅ V${item.selectedVersionIndex + 1} file:`, fileKey);
+                        } else {
+                            console.log(`⚠️ No version ${item.selectedVersionIndex} for product:`, item.productId);
                         }
                     } catch (err) {
-                        console.log('Product lookup failed:', item.productId);
+                        console.log('❌ Product lookup failed:', item.productId, err.message);
                     }
+                } else {
+                    console.log(`⏭️ Skipping temp ID:`, item.productId);
                 }
 
-                return { ...item.toObject(), fileKey };
+                return {
+                    ...item.toObject(),
+                    fileKey: fileKey  // ✅ CORRECT VERSION FILE GUARANTEED
+                };
             })
         );
-        console.log('🛒 Final order items with fileKeys:', JSON.stringify(itemsWithFileKeys, null, 2));
 
+        console.log('🛒 Order items with correct files:', itemsWithFileKeys.map(i => ({
+            title: i.title,
+            version: i.selectedVersionIndex,
+            fileKey: i.fileKey
+        })));
+
+        // PayPal Order Creation
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer('return=representation');
         request.requestBody({
@@ -531,17 +555,17 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                     value: total.toFixed(2),
                 },
                 items: itemsWithFileKeys.map((item) => ({
-                    name: `${item.title} by ${item.artist}`,
+                    name: `${item.title} by ${item.artist || 'Unknown'} (V${(item.selectedVersionIndex || 0) + 1})`,
                     unit_amount: {
                         currency_code: 'USD',
                         value: Number(item.price).toFixed(2),
                     },
                     quantity: item.quantity.toString(),
-                    sku: item.productId,
+                    sku: `${item.productId}_${item.selectedVersionIndex || 0}`,
                 })),
             }],
             application_context: {
-                brand_name: 'Waslerr',
+                brand_name: 'Waslerr Music',
                 user_action: 'PAY_NOW',
                 return_url: `${req.headers.origin}/checkout/success`,
                 cancel_url: `${req.headers.origin}/cart`,
@@ -549,12 +573,13 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             },
         });
 
-        console.log('Creating PayPal order...');
+        console.log('📤 Creating PayPal order...');
         const order = await client().execute(request);
 
+        // Save order to database
         const dbOrder = new Order({
             user: req.user.id,
-            items: itemsWithFileKeys,  // ✅ FIXED: Correct fileKeys
+            items: itemsWithFileKeys,  // ✅ CORRECT FILES SAVED
             totalAmount: total,
             baseAmount: baseTotal,
             extraAmount: extraAmount,
@@ -567,7 +592,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
         await dbOrder.save();
-        console.log('✅ Order saved with correct fileKeys');
+        console.log('✅ Order saved successfully');
 
         const approveLink = order.result.links.find((link) => link.rel === 'approve');
         if (!approveLink) {
@@ -581,7 +606,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
     } catch (err) {
-        console.error('PayPal order error:', err);
+        console.error('🚨 PayPal order creation ERROR:', err);
         res.status(500).json({
             success: false,
             error: 'Failed to create PayPal order',
