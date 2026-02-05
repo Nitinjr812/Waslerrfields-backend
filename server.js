@@ -416,64 +416,45 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 .status(400)
                 .json({ success: false, message: "Order total must be zero for free order" });
 
-        // 🔥 OBJECTID SAFE CHECK
-        const isValidMongoId = (id) => {
-            return id && typeof id === 'string' && id.length === 24 && /^[0-9a-fA-F]{24}$/.test(id);
-        };
-
+        // ⭐ PEHLE download links generate karo
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
 
         for (const item of cart.items) {
-            let url = null;
+            const product = await Product.findById(item.productId);
+            if (!product) continue;
 
-            // ✅ ONLY VALID MONGODB IDs lookup
-            if (isValidMongoId(item.productId)) {
-                try {
-                    const product = await Product.findById(item.productId);
-                    if (product) {
-                        // YE LINE GALAT THI 👇 item.version nahi hai, selectedVersionIndex hai
-                        const versionIndex = item.selectedVersionIndex || 0;
-                        const version = product.versions?.[versionIndex];
-                        
-                        if (version?.r2MusicFile) {
-                            url = getSignedDownloadUrl(version.r2MusicFile);
-                        }
-                    }
-                } catch (err) {
-                    console.log('❌ Free order product lookup failed:', item.productId);
-                }
-            } else {
-                console.log('⏭️ Free order skipping temp ID:', item.productId);
-                // Fallback: cart mein saved r2MusicFile use karo
-                if (item.r2MusicFile) {
-                    url = getSignedDownloadUrl(item.r2MusicFile);
-                }
-            }
+            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
+            if (!version || !version.r2MusicFile) continue;
 
-            if (url) {
-                itemsWithDownloadLinks.push({
-                    productId: item.productId,
-                    title: item.title,
-                    artist: item.artist,
-                    price: item.price,
-                    quantity: item.quantity,
-                    selectedVersionIndex: item.selectedVersionIndex,  // ✅ Fixed field name
-                    image: item.image,
-                    downloadLink: url
-                });
+            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
+            const url = getSignedDownloadUrl(version.r2MusicFile);
 
-                downloadLinks.push({
-                    title: item.title,
-                    artist: item.artist,
-                    url,
-                });
-            }
+
+            // ⭐ Add to itemsWithDownloadLinks
+            itemsWithDownloadLinks.push({
+                productId: item.productId,
+                title: item.title,
+                artist: item.artist,
+                price: item.price,
+                quantity: item.quantity,
+                version: item.version,
+                image: item.image,
+                downloadLink: url  // ⭐ Use 'url' variable here
+            });
+
+            // Add to downloadLinks array for response
+            downloadLinks.push({
+                title: product.title,
+                artist: product.artist,
+                url,
+            });
         }
 
+        // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
-            items: itemsWithDownloadLinks,
+            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
@@ -482,6 +463,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         await order.save();
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
+        // Send response
         res.json({
             success: true,
             message: "Free order placed!",
