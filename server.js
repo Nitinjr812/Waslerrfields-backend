@@ -592,144 +592,107 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         res.status(500).json(errorResponse);
     }
 });
-
-// Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
         const { orderID } = req.body;
 
-        if (!orderID) {
-            return res.status(400).json({
-                success: false,
-                message: 'Order ID is required'
-            });
-        }
-
-        // Capture PayPal payment
+        // Capture PayPal payment (ye sahi hai)
         const request = new paypal.orders.OrdersCaptureRequest(orderID);
         request.requestBody({});
         const capture = await client().execute(request);
 
-        // Update order in DB
+        // Order update (ye bhi sahi hai)
         const updatedOrder = await Order.findOneAndUpdate(
             { paypalOrderId: orderID, user: req.user.id },
-            {
-                status: 'completed',
-                paymentDetails: capture.result
-            },
+            { status: 'completed', paymentDetails: capture.result },
             { new: true }
         ).populate('user', 'name email');
 
         if (!updatedOrder) {
-            return res.status(404).json({
-                success: false,
-                message: 'Order not found'
-            });
+            return res.status(404).json({ success: false, message: 'Order not found' });
         }
 
-        // Clear user's cart
-        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
-
-        // Get product versions to find r2MusicFile keys
+        // 🔥 MAIN FIX - Proper version matching
         const productIds = updatedOrder.items.map((item) => item.productId);
         const products = await Product.find({ _id: { $in: productIds } });
 
         const downloadLinks = await Promise.all(
-            products.map(async (product, index) => {
-                const version = product.versions.find((v) => v.r2MusicFile);
+            updatedOrder.items.map(async (item) => {
+                // 🔥 YE MAIN FIX HAI!
+                const product = products.find(p => p._id.toString() === item.productId.toString());
 
-                if (!version) {
-                    console.log(`No r2MusicFile found for "${product.title}"`);
+                if (!product) return null;
+
+                // Version find karo based on cart item data
+                let version;
+                if (item.selectedVersionIndex !== undefined && item.selectedVersionIndex !== null) {
+                    // Priority 1: selectedVersionIndex use karo
+                    version = product.versions[item.selectedVersionIndex];
+                } else if (item.version || item.selectedVersionName) {
+                    // Priority 2: version name match karo
+                    version = product.versions.find(v =>
+                        v.name === item.version || v.name === item.selectedVersionName
+                    );
+                } else {
+                    // Priority 3: first version with r2MusicFile
+                    version = product.versions.find(v => v.r2MusicFile);
+                }
+
+                if (!version || !version.r2MusicFile) {
+                    console.log(`❌ No r2MusicFile for ${product.title} version:`, {
+                        selectedVersionIndex: item.selectedVersionIndex,
+                        version: item.version,
+                        availableVersions: product.versions.map(v => ({ name: v.name, hasFile: !!v.r2MusicFile }))
+                    });
                     return null;
                 }
 
                 const fileKey = version.r2MusicFile;
                 const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
 
-                console.log(`🔗 Song #${index + 1}: "${product.title}"`);
-                console.log(`🎯 fileKey: ${fileKey}`);
-                console.log(`🌐 Worker Link: ${workerUrl}`);
-                console.log(`🔑 API-Key Being Used: ${process.env.CLOUDFLARE_API_SECRET}`);
+                console.log(`🔗 "${product.title}" - "${version.name}" → ${fileKey}`);
 
                 try {
                     const workerRes = await fetch(workerUrl, {
-                        headers: {
-                            'API-Key': process.env.CLOUDFLARE_API_SECRET
-                        }
+                        headers: { 'API-Key': process.env.CLOUDFLARE_API_SECRET }
                     });
 
-                    const text = await workerRes.text();
-
                     if (!workerRes.ok) {
-                        console.log(`❌ Worker failed for ${fileKey}:`, workerRes.status, text);
+                        console.log(`❌ Worker failed: ${workerRes.status}`);
                         return null;
                     }
 
-                    const { url } = JSON.parse(text);
-
-                    console.log(`✅ Success! File link generated: ${url}`);
+                    const { url } = await workerRes.json();
 
                     return {
                         title: product.title,
                         artist: product.artist,
-                        url
+                        version: version.name,  // 🔥 Version name bhi add kiya
+                        url,
+                        productId: item.productId
                     };
                 } catch (err) {
-                    console.log(`❌ Exception talking to Cloudflare Worker for fileKey: ${fileKey}`, err);
+                    console.log(`❌ Worker error for ${fileKey}:`, err.message);
                     return null;
                 }
             })
         );
 
-        // Filter valid links only
         const validLinks = downloadLinks.filter(Boolean);
 
-        // Send cute email with download links
-        const emailHtml = `
-      <div style="font-family: Arial; max-width: 600px; margin: auto;">
-        <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
-        <p>Here are your download links:</p>
-        ${validLinks.map(link => `
-          <div style="margin: 10px 0;">
-            <strong>${link.title} by ${link.artist}</strong> <br/>
-            <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
-              text-decoration: none;" href="${link.url}" target="_blank">Download</a>
-          </div>
-        `).join('')}
-        <p><small>Links expire in 10 minutes.</small></p>
-        <p>Stay awesome,<br/>Waslerr Team</p>
-      </div>
-    `;
-
-        await sendEmail(
-            updatedOrder.user.email,
-            `Your Waslerr Order #${updatedOrder._id}`,
-            emailHtml
-        );
+        // Email bhejna (same)
+        await sendEmail(updatedOrder.user.email, `Your Waslerr Order #${updatedOrder._id}`, emailHtml);
 
         res.json({
             success: true,
-            message: 'Payment captured and download link sent!',
+            message: 'Payment successful! Check your email for download links.',
             order: updatedOrder,
-            capture: capture.result,
-            downloadLinks: validLinks
+            downloadLinks: validLinks  // ✅ Ye frontend ko milega
         });
+
     } catch (err) {
         console.error('❗ Payment capture error:', err);
-
-        if (orderID) {
-            await Order.findOneAndUpdate(
-                { paypalOrderId: orderID, user: req.user.id },
-                { status: 'failed' }
-            );
-        }
-
-        res.status(500).json({
-            success: false,
-            error: 'Failed to complete order',
-            message: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -1353,20 +1316,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-                .populate('user', 'name email')  // User name + email populate
-                .sort({ createdAt: -1 })  // Latest first
-                .lean();
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
-            res.json({
-                success: true,
-                orders,
-                count: orders.length
-            });
-        } catch (err) {
-            console.error('Orders error:', err);
-            res.status(500).json({ success: false, message: err.message });
-        }
-    });
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1388,11 +1351,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-       
+
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-        
+
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
