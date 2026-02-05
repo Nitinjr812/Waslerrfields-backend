@@ -475,6 +475,8 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+const isValidMongoId = (id) => mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === id;
+
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -501,38 +503,22 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         // 🔥 CRITICAL FIX: Add fileKey for each item from Product DB
         const itemsWithFileKeys = await Promise.all(
             cart.items.map(async (item) => {
-                try {
-                    console.log('🔍 Processing cart item:', item.productId, 'version:', item.selectedVersionIndex);
+                let fileKey = item.r2MusicFile || 'default.mp3';
 
-                    const product = await Product.findById(item.productId);
-                    if (product?.versions?.length > 0) {
-                        const versionIndex = item.selectedVersionIndex || 0;
-                        const correctFile = product.versions[versionIndex]?.r2MusicFile || product.versions[0].r2MusicFile;
-
-                        console.log(`✅ Version ${versionIndex} file:`, correctFile);
-
-                        return {
-                            ...item.toObject(),
-                            fileKey: correctFile,  // ✅ CORRECT VERSION FILE
-                            artist: product.artist || item.artist || 'Unknown'
-                        };
+                if (isValidMongoId(item.productId)) {
+                    try {
+                        const product = await Product.findById(item.productId);
+                        if (product?.versions?.[item.selectedVersionIndex || 0]) {
+                            fileKey = product.versions[item.selectedVersionIndex || 0].r2MusicFile;
+                        }
+                    } catch (err) {
+                        console.log('Product lookup failed:', item.productId);
                     }
-                    return {
-                        ...item.toObject(),
-                        fileKey: item.r2MusicFile || item.fileKey || 'default.mp3',
-                        artist: item.artist || 'Unknown'
-                    };
-                } catch (err) {
-                    console.error('❌ Product lookup failed:', err);
-                    return {
-                        ...item.toObject(),
-                        fileKey: item.r2MusicFile || item.fileKey || 'default.mp3',
-                        artist: item.artist || 'Unknown'
-                    };
                 }
+
+                return { ...item.toObject(), fileKey };
             })
         );
-
         console.log('🛒 Final order items with fileKeys:', JSON.stringify(itemsWithFileKeys, null, 2));
 
         const request = new paypal.orders.OrdersCreateRequest();
