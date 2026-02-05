@@ -170,7 +170,7 @@ const orderSchema = new mongoose.Schema({
 
 const Order = mongoose.model('Order', orderSchema);
 
-// Product Model
+// Product Model    
 const productSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, required: true },
@@ -475,7 +475,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -489,42 +488,72 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         }
 
         const extraAmount = Number(req.body.extraAmount || 0);
-
         const baseTotal = cart.items.reduce((sum, item) => {
             const itemTotal = Number(item.price) * Number(item.quantity);
             return sum + itemTotal;
         }, 0);
-
         const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
 
         if (total <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Invalid order total',
-            });
+            return res.status(400).json({ success: false, message: 'Invalid order total' });
         }
+
+        // 🔥 CRITICAL FIX: Add fileKey for each item from Product DB
+        const itemsWithFileKeys = await Promise.all(
+            cart.items.map(async (item) => {
+                try {
+                    console.log('🔍 Processing cart item:', item.productId, 'version:', item.selectedVersionIndex);
+
+                    const product = await Product.findById(item.productId);
+                    if (product?.versions?.length > 0) {
+                        const versionIndex = item.selectedVersionIndex || 0;
+                        const correctFile = product.versions[versionIndex]?.r2MusicFile || product.versions[0].r2MusicFile;
+
+                        console.log(`✅ Version ${versionIndex} file:`, correctFile);
+
+                        return {
+                            ...item.toObject(),
+                            fileKey: correctFile,  // ✅ CORRECT VERSION FILE
+                            artist: product.artist || item.artist || 'Unknown'
+                        };
+                    }
+                    return {
+                        ...item.toObject(),
+                        fileKey: item.r2MusicFile || item.fileKey || 'default.mp3',
+                        artist: item.artist || 'Unknown'
+                    };
+                } catch (err) {
+                    console.error('❌ Product lookup failed:', err);
+                    return {
+                        ...item.toObject(),
+                        fileKey: item.r2MusicFile || item.fileKey || 'default.mp3',
+                        artist: item.artist || 'Unknown'
+                    };
+                }
+            })
+        );
+
+        console.log('🛒 Final order items with fileKeys:', JSON.stringify(itemsWithFileKeys, null, 2));
 
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer('return=representation');
         request.requestBody({
             intent: 'CAPTURE',
-            purchase_units: [
-                {
-                    amount: {
-                        currency_code: 'USD',
-                        value: total.toFixed(2), // sirf yahi, breakdown hata diya
-                    },
-                    items: cart.items.map((item) => ({
-                        name: `${item.title} by ${item.artist}`,
-                        unit_amount: {
-                            currency_code: 'USD',
-                            value: Number(item.price).toFixed(2),
-                        },
-                        quantity: item.quantity.toString(),
-                        sku: item.productId,
-                    })),
+            purchase_units: [{
+                amount: {
+                    currency_code: 'USD',
+                    value: total.toFixed(2),
                 },
-            ],
+                items: itemsWithFileKeys.map((item) => ({
+                    name: `${item.title} by ${item.artist}`,
+                    unit_amount: {
+                        currency_code: 'USD',
+                        value: Number(item.price).toFixed(2),
+                    },
+                    quantity: item.quantity.toString(),
+                    sku: item.productId,
+                })),
+            }],
             application_context: {
                 brand_name: 'Waslerr',
                 user_action: 'PAY_NOW',
@@ -534,18 +563,12 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             },
         });
 
-        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
+        console.log('Creating PayPal order...');
         const order = await client().execute(request);
-        console.log('PayPal order response:', JSON.stringify(order, null, 2));
-
-        const approveLink = order.result.links.find((link) => link.rel === 'approve');
-        if (!approveLink) {
-            throw new Error('No approval URL found in PayPal response');
-        }
 
         const dbOrder = new Order({
             user: req.user.id,
-            items: cart.items,
+            items: itemsWithFileKeys,  // ✅ FIXED: Correct fileKeys
             totalAmount: total,
             baseAmount: baseTotal,
             extraAmount: extraAmount,
@@ -558,38 +581,26 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
         await dbOrder.save();
+        console.log('✅ Order saved with correct fileKeys');
+
+        const approveLink = order.result.links.find((link) => link.rel === 'approve');
+        if (!approveLink) {
+            throw new Error('No approval URL found in PayPal response');
+        }
 
         res.json({
             success: true,
             orderID: order.result.id,
             approvalUrl: approveLink.href,
-            paypalResponse: {
-                id: order.result.id,
-                status: order.result.status,
-                create_time: order.result.create_time,
-            },
-        });
-    } catch (err) {
-        console.error('PayPal order error:', {
-            message: err.message,
-            stack: err.stack,
-            response: err.response || null,
         });
 
-        const errorResponse = {
+    } catch (err) {
+        console.error('PayPal order error:', err);
+        res.status(500).json({
             success: false,
             error: 'Failed to create PayPal order',
             message: err.message,
-        };
-
-        if (err.response) {
-            errorResponse.paypalError = {
-                status: err.response.statusCode,
-                details: err.response.result,
-            };
-        }
-
-        res.status(500).json(errorResponse);
+        });
     }
 });
 
@@ -1353,20 +1364,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-                .populate('user', 'name email')  // User name + email populate
-                .sort({ createdAt: -1 })  // Latest first
-                .lean();
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
-            res.json({
-                success: true,
-                orders,
-                count: orders.length
-            });
-        } catch (err) {
-            console.error('Orders error:', err);
-            res.status(500).json({ success: false, message: err.message });
-        }
-    });
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1388,11 +1399,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-       
+
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-        
+
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
