@@ -592,7 +592,146 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         res.status(500).json(errorResponse);
     }
 });
-//   PayPal payment (ye sahi hai)
+
+// Capture PayPal Order
+app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
+    try {
+        const { orderID } = req.body;
+
+        if (!orderID) {
+            return res.status(400).json({
+                success: false,
+                message: 'Order ID is required'
+            });
+        }
+
+        // Capture PayPal payment
+        const request = new paypal.orders.OrdersCaptureRequest(orderID);
+        request.requestBody({});
+        const capture = await client().execute(request);
+
+        // Update order in DB
+        const updatedOrder = await Order.findOneAndUpdate(
+            { paypalOrderId: orderID, user: req.user.id },
+            {
+                status: 'completed',
+                paymentDetails: capture.result
+            },
+            { new: true }
+        ).populate('user', 'name email');
+
+        if (!updatedOrder) {
+            return res.status(404).json({
+                success: false,
+                message: 'Order not found'
+            });
+        }
+
+        // Clear user's cart
+        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
+
+        // Get product versions to find r2MusicFile keys
+        const productIds = updatedOrder.items.map((item) => item.productId);
+        const products = await Product.find({ _id: { $in: productIds } });
+
+        const downloadLinks = await Promise.all(
+            products.map(async (product, index) => {
+                const version = product.versions.find((v) => v.r2MusicFile);
+
+                if (!version) {
+                    console.log(`No r2MusicFile found for "${product.title}"`);
+                    return null;
+                }
+
+                const fileKey = version.r2MusicFile;
+                const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
+
+                console.log(`🔗 Song #${index + 1}: "${product.title}"`);
+                console.log(`🎯 fileKey: ${fileKey}`);
+                console.log(`🌐 Worker Link: ${workerUrl}`);
+                console.log(`🔑 API-Key Being Used: ${process.env.CLOUDFLARE_API_SECRET}`);
+
+                try {
+                    const workerRes = await fetch(workerUrl, {
+                        headers: {
+                            'API-Key': process.env.CLOUDFLARE_API_SECRET
+                        }
+                    });
+
+                    const text = await workerRes.text();
+
+                    if (!workerRes.ok) {
+                        console.log(`❌ Worker failed for ${fileKey}:`, workerRes.status, text);
+                        return null;
+                    }
+
+                    const { url } = JSON.parse(text);
+
+                    console.log(`✅ Success! File link generated: ${url}`);
+
+                    return {
+                        title: product.title,
+                        artist: product.artist,
+                        url
+                    };
+                } catch (err) {
+                    console.log(`❌ Exception talking to Cloudflare Worker for fileKey: ${fileKey}`, err);
+                    return null;
+                }
+            })
+        );
+
+        // Filter valid links only
+        const validLinks = downloadLinks.filter(Boolean);
+
+        // Send cute email with download links
+        const emailHtml = `
+      <div style="font-family: Arial; max-width: 600px; margin: auto;">
+        <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
+        <p>Here are your download links:</p>
+        ${validLinks.map(link => `
+          <div style="margin: 10px 0;">
+            <strong>${link.title} by ${link.artist}</strong> <br/>
+            <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
+              text-decoration: none;" href="${link.url}" target="_blank">Download</a>
+          </div>
+        `).join('')}
+        <p><small>Links expire in 10 minutes.</small></p>
+        <p>Stay awesome,<br/>Waslerr Team</p>
+      </div>
+    `;
+
+        await sendEmail(
+            updatedOrder.user.email,
+            `Your Waslerr Order #${updatedOrder._id}`,
+            emailHtml
+        );
+
+        res.json({
+            success: true,
+            message: 'Payment captured and download link sent!',
+            order: updatedOrder,
+            capture: capture.result,
+            downloadLinks: validLinks
+        });
+    } catch (err) {
+        console.error('❗ Payment capture error:', err);
+
+        if (orderID) {
+            await Order.findOneAndUpdate(
+                { paypalOrderId: orderID, user: req.user.id },
+                { status: 'failed' }
+            );
+        }
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to complete order',
+            message: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
+    }
+});
 
 
 // Get User Orders
@@ -1214,20 +1353,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
+                .populate('user', 'name email')  // User name + email populate
+                .sort({ createdAt: -1 })  // Latest first
+                .lean();
 
-        res.json({
-            success: true,
-            orders,
-            count: orders.length
-        });
-    } catch (err) {
-        console.error('Orders error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
+            res.json({
+                success: true,
+                orders,
+                count: orders.length
+            });
+        } catch (err) {
+            console.error('Orders error:', err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    });
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1249,11 +1388,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-
+       
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-
+        
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
