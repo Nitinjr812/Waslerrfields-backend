@@ -416,45 +416,64 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 .status(400)
                 .json({ success: false, message: "Order total must be zero for free order" });
 
-        // ⭐ PEHLE download links generate karo
+        // 🔥 OBJECTID SAFE CHECK
+        const isValidMongoId = (id) => {
+            return id && typeof id === 'string' && id.length === 24 && /^[0-9a-fA-F]{24}$/.test(id);
+        };
+
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
 
         for (const item of cart.items) {
-            const product = await Product.findById(item.productId);
-            if (!product) continue;
+            let url = null;
 
-            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
-            if (!version || !version.r2MusicFile) continue;
+            // ✅ ONLY VALID MONGODB IDs lookup
+            if (isValidMongoId(item.productId)) {
+                try {
+                    const product = await Product.findById(item.productId);
+                    if (product) {
+                        // YE LINE GALAT THI 👇 item.version nahi hai, selectedVersionIndex hai
+                        const versionIndex = item.selectedVersionIndex || 0;
+                        const version = product.versions?.[versionIndex];
+                        
+                        if (version?.r2MusicFile) {
+                            url = getSignedDownloadUrl(version.r2MusicFile);
+                        }
+                    }
+                } catch (err) {
+                    console.log('❌ Free order product lookup failed:', item.productId);
+                }
+            } else {
+                console.log('⏭️ Free order skipping temp ID:', item.productId);
+                // Fallback: cart mein saved r2MusicFile use karo
+                if (item.r2MusicFile) {
+                    url = getSignedDownloadUrl(item.r2MusicFile);
+                }
+            }
 
-            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
-            const url = getSignedDownloadUrl(version.r2MusicFile);
+            if (url) {
+                itemsWithDownloadLinks.push({
+                    productId: item.productId,
+                    title: item.title,
+                    artist: item.artist,
+                    price: item.price,
+                    quantity: item.quantity,
+                    selectedVersionIndex: item.selectedVersionIndex,  // ✅ Fixed field name
+                    image: item.image,
+                    downloadLink: url
+                });
 
-
-            // ⭐ Add to itemsWithDownloadLinks
-            itemsWithDownloadLinks.push({
-                productId: item.productId,
-                title: item.title,
-                artist: item.artist,
-                price: item.price,
-                quantity: item.quantity,
-                version: item.version,
-                image: item.image,
-                downloadLink: url  // ⭐ Use 'url' variable here
-            });
-
-            // Add to downloadLinks array for response
-            downloadLinks.push({
-                title: product.title,
-                artist: product.artist,
-                url,
-            });
+                downloadLinks.push({
+                    title: item.title,
+                    artist: item.artist,
+                    url,
+                });
+            }
         }
 
-        // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
-            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
+            items: itemsWithDownloadLinks,
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
@@ -463,7 +482,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         await order.save();
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // Send response
         res.json({
             success: true,
             message: "Free order placed!",
@@ -475,7 +493,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-const isValidMongoId = (id) => mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === id;
 
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
@@ -490,82 +507,44 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         }
 
         const extraAmount = Number(req.body.extraAmount || 0);
+
         const baseTotal = cart.items.reduce((sum, item) => {
             const itemTotal = Number(item.price) * Number(item.quantity);
             return sum + itemTotal;
         }, 0);
+
         const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
 
         if (total <= 0) {
-            return res.status(400).json({ success: false, message: 'Invalid order total' });
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid order total',
+            });
         }
 
-        // 🔥 HELPER FUNCTION - ObjectId CRASH PREVENTION
-        const isValidMongoId = (id) => {
-            try {
-                return mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === id;
-            } catch {
-                return false;
-            }
-        };
-
-        // 🔥 FIXED: ObjectId safe version lookup + fallback
-        const itemsWithFileKeys = await Promise.all(
-            cart.items.map(async (item) => {
-                let fileKey = item.r2MusicFile || item.fileKey || 'default.mp3';
-
-                // ✅ SAFE: Only valid MongoDB IDs query karenge
-                if (isValidMongoId(item.productId)) {
-                    try {
-                        const product = await Product.findById(item.productId);
-                        if (product?.versions?.[item.selectedVersionIndex || 0]) {
-                            fileKey = product.versions[item.selectedVersionIndex || 0].r2MusicFile;
-                            console.log(`✅ V${item.selectedVersionIndex + 1} file:`, fileKey);
-                        } else {
-                            console.log(`⚠️ No version ${item.selectedVersionIndex} for product:`, item.productId);
-                        }
-                    } catch (err) {
-                        console.log('❌ Product lookup failed:', item.productId, err.message);
-                    }
-                } else {
-                    console.log(`⏭️ Skipping temp ID:`, item.productId);
-                }
-
-                return {
-                    ...item.toObject(),
-                    fileKey: fileKey  // ✅ CORRECT VERSION FILE GUARANTEED
-                };
-            })
-        );
-
-        console.log('🛒 Order items with correct files:', itemsWithFileKeys.map(i => ({
-            title: i.title,
-            version: i.selectedVersionIndex,
-            fileKey: i.fileKey
-        })));
-
-        // PayPal Order Creation
         const request = new paypal.orders.OrdersCreateRequest();
         request.prefer('return=representation');
         request.requestBody({
             intent: 'CAPTURE',
-            purchase_units: [{
-                amount: {
-                    currency_code: 'USD',
-                    value: total.toFixed(2),
-                },
-                items: itemsWithFileKeys.map((item) => ({
-                    name: `${item.title} by ${item.artist || 'Unknown'} (V${(item.selectedVersionIndex || 0) + 1})`,
-                    unit_amount: {
+            purchase_units: [
+                {
+                    amount: {
                         currency_code: 'USD',
-                        value: Number(item.price).toFixed(2),
+                        value: total.toFixed(2), // sirf yahi, breakdown hata diya
                     },
-                    quantity: item.quantity.toString(),
-                    sku: `${item.productId}_${item.selectedVersionIndex || 0}`,
-                })),
-            }],
+                    items: cart.items.map((item) => ({
+                        name: `${item.title} by ${item.artist}`,
+                        unit_amount: {
+                            currency_code: 'USD',
+                            value: Number(item.price).toFixed(2),
+                        },
+                        quantity: item.quantity.toString(),
+                        sku: item.productId,
+                    })),
+                },
+            ],
             application_context: {
-                brand_name: 'Waslerr Music',
+                brand_name: 'Waslerr',
                 user_action: 'PAY_NOW',
                 return_url: `${req.headers.origin}/checkout/success`,
                 cancel_url: `${req.headers.origin}/cart`,
@@ -573,13 +552,18 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             },
         });
 
-        console.log('📤 Creating PayPal order...');
+        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
         const order = await client().execute(request);
+        console.log('PayPal order response:', JSON.stringify(order, null, 2));
 
-        // Save order to database
+        const approveLink = order.result.links.find((link) => link.rel === 'approve');
+        if (!approveLink) {
+            throw new Error('No approval URL found in PayPal response');
+        }
+
         const dbOrder = new Order({
             user: req.user.id,
-            items: itemsWithFileKeys,  // ✅ CORRECT FILES SAVED
+            items: cart.items,
             totalAmount: total,
             baseAmount: baseTotal,
             extraAmount: extraAmount,
@@ -592,26 +576,38 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
 
         await dbOrder.save();
-        console.log('✅ Order saved successfully');
-
-        const approveLink = order.result.links.find((link) => link.rel === 'approve');
-        if (!approveLink) {
-            throw new Error('No approval URL found in PayPal response');
-        }
 
         res.json({
             success: true,
             orderID: order.result.id,
             approvalUrl: approveLink.href,
+            paypalResponse: {
+                id: order.result.id,
+                status: order.result.status,
+                create_time: order.result.create_time,
+            },
+        });
+    } catch (err) {
+        console.error('PayPal order error:', {
+            message: err.message,
+            stack: err.stack,
+            response: err.response || null,
         });
 
-    } catch (err) {
-        console.error('🚨 PayPal order creation ERROR:', err);
-        res.status(500).json({
+        const errorResponse = {
             success: false,
             error: 'Failed to create PayPal order',
             message: err.message,
-        });
+        };
+
+        if (err.response) {
+            errorResponse.paypalError = {
+                status: err.response.statusCode,
+                details: err.response.result,
+            };
+        }
+
+        res.status(500).json(errorResponse);
     }
 });
 
@@ -1375,20 +1371,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
+                .populate('user', 'name email')  // User name + email populate
+                .sort({ createdAt: -1 })  // Latest first
+                .lean();
 
-        res.json({
-            success: true,
-            orders,
-            count: orders.length
-        });
-    } catch (err) {
-        console.error('Orders error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
+            res.json({
+                success: true,
+                orders,
+                count: orders.length
+            });
+        } catch (err) {
+            console.error('Orders error:', err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    });
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1410,11 +1406,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-
+       
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-
+        
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
