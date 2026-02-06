@@ -399,150 +399,80 @@ function getSignedDownloadUrl(fileKey) {
 }
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
+        const user = await User.findById(req.user.id);
+        if (!user)
+            return res.status(404).json({ success: false, message: "User not found" });
+
         const cart = await Cart.findOne({ user: req.user.id });
-        console.log('🔍 CART ITEMS COUNT:', cart?.items?.length);
-        console.log('🔍 FULL CART:', JSON.stringify(cart?.items, null, 2));
-
-        if (!cart || !cart.items.length) {
+        if (!cart || cart.items.length === 0)
             return res.status(400).json({ success: false, message: "Cart is empty" });
-        }
 
+        const total = cart.items.reduce(
+            (sum, item) => sum + Number(item.price) * Number(item.quantity),
+            0
+        );
+        if (total !== 0)
+            return res
+                .status(400)
+                .json({ success: false, message: "Order total must be zero for free order" });
+
+        // ⭐ PEHLE download links generate karo
+        const itemsWithDownloadLinks = [];
         const downloadLinks = [];
-        let processedCount = 0;
 
         for (const item of cart.items) {
-            console.log(`\n🔍 PROCESSING ITEM ${++processedCount}:`, {
-                productId: item.productId,
-                version: item.version,
-                selectedVersionIndex: item.selectedVersionIndex
-            });
-
-            // Product fetch
             const product = await Product.findById(item.productId);
-            if (!product) {
-                console.log(`❌ PRODUCT NOT FOUND: ${item.productId}`);
-                continue;
-            }
+            if (!product) continue;
 
-            console.log(`✅ PRODUCT: ${product.title}`);
-            console.log(`🔍 VERSIONS (${product.versions?.length || 0}):`,
-                product.versions?.map((v, i) => ({
-                    index: i,
-                    name: v.name,
-                    hasR2: !!v.r2MusicFile,
-                    r2Key: v.r2MusicFile
-                })) || 'NO VERSIONS'
-            );
+            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
+            if (!version || !version.r2MusicFile) continue;
 
-            // Version logic with ALL FALLBACKS
-            let version = null;
-            const versionIndex = Number(item.selectedVersionIndex) || 0;
+            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
+            const url = getSignedDownloadUrl(version.r2MusicFile);
 
-            // Try exact index first
-            if (product.versions[versionIndex]) {
-                version = product.versions[versionIndex];
-            }
-            // Fallback to first version with r2MusicFile
-            else if (product.versions.find(v => v.r2MusicFile)) {
-                version = product.versions.find(v => v.r2MusicFile);
-            }
-            // Final fallback to first version
-            else if (product.versions[0]) {
-                version = product.versions[0];
-            }
 
-            console.log(`🔍 SELECTED VERSION:`, version?.name, 'R2:', !!version?.r2MusicFile);
+            // ⭐ Add to itemsWithDownloadLinks
+            itemsWithDownloadLinks.push({
+                productId: item.productId,
+                title: item.title,
+                artist: item.artist,
+                price: item.price,
+                quantity: item.quantity,
+                version: item.version,
+                image: item.image,
+                downloadLink: url  // ⭐ Use 'url' variable here
+            });
 
-            if (!version?.r2MusicFile) {
-                console.log(`❌ NO DOWNLOAD FILE FOUND for ${product.title}`);
-                continue;
-            }
-
-            // Generate signed URL
-            try {
-                const url = getSignedDownloadUrl(version.r2MusicFile);
-                console.log(`✅ URL GENERATED: ${version.r2MusicFile} → ${url.substring(0, 50)}...`);
-
-                downloadLinks.push({
-                    title: `${product.title} - ${version.name}`,
-                    artist: product.artist,
-                    version: version.name,
-                    url: url,
-                });
-            } catch (urlError) {
-                console.log(`❌ URL GENERATION FAILED:`, urlError.message);
-            }
-        }
-
-        console.log(`\n🎯 FINAL RESULT: ${downloadLinks.length} valid download links`);
-
-        if (downloadLinks.length === 0) {
-            return res.status(400).json({
-                success: false,
-                message: "No products have downloadable files. Please check product versions.",
-                debug: {
-                    totalCartItems: cart.items.length,
-                    processed: processedCount,
-                    productsFound: processedCount,
-                    versionsWithFiles: 0
-                }
+            // Add to downloadLinks array for response
+            downloadLinks.push({
+                title: product.title,
+                artist: product.artist,
+                url,
             });
         }
 
-        // Save order
+        // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
-            items: cart.items,
+            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
             totalAmount: 0,
-            paypalOrderId: `freeorder-${Date.now()}`,
+            paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
-            paymentDetails: { method: "free" }
+            paymentDetails: { method: "free", email: user.email },
         });
         await order.save();
-
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
+        // Send response
         res.json({
             success: true,
-            message: `🎉 ${downloadLinks.length} downloads ready!`,
-            downloadLinks
+            message: "Free order placed!",
+            downloadLinks,
+            orderId: order._id,
         });
-
     } catch (err) {
-        console.error('❌ FREE ORDER ERROR:', err);
+        console.error("Error in free order route:", err);
         res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-// /api/cart/cleanup
-app.post('/api/cart/cleanup', protect, async (req, res) => {
-    try {
-        const cart = await Cart.findOne({ user: req.user.id });
-        if (!cart || !cart.items.length) {
-            return res.json({ success: true, cleaned: 0 });
-        }
-
-        // Filter valid products only
-        const validItems = [];
-        for (const item of cart.items) {
-            try {
-                const product = await Product.findById(item.productId);
-                if (product && item.productId.length === 24) {
-                    validItems.push(item);
-                }
-            } catch (e) {
-                console.log('Removing invalid item:', item.productId);
-            }
-        }
-
-        await Cart.findOneAndUpdate({ user: req.user.id }, { items: validItems });
-        res.json({
-            success: true,
-            cleaned: cart.items.length - validItems.length,
-            remaining: validItems.length
-        });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -1423,20 +1353,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-            .populate('user', 'name email')  // User name + email populate
-            .sort({ createdAt: -1 })  // Latest first
-            .lean();
+                .populate('user', 'name email')  // User name + email populate
+                .sort({ createdAt: -1 })  // Latest first
+                .lean();
 
-        res.json({
-            success: true,
-            orders,
-            count: orders.length
-        });
-    } catch (err) {
-        console.error('Orders error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
+            res.json({
+                success: true,
+                orders,
+                count: orders.length
+            });
+        } catch (err) {
+            console.error('Orders error:', err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    });
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1458,11 +1388,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-
+       
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-
+        
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
