@@ -400,112 +400,113 @@ function getSignedDownloadUrl(fileKey) {
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
-        if (!user)
-            return res.status(404).json({ success: false, message: "User not found" });
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const cart = await Cart.findOne({ user: req.user.id });
-        if (!cart || cart.items.length === 0)
+        if (!cart || cart.items.length === 0) {
             return res.status(400).json({ success: false, message: "Cart is empty" });
-
-        const total = cart.items.reduce(
-            (sum, item) => sum + Number(item.price) * Number(item.quantity),
-            0
-        );
-        if (total !== 0)
-            return res
-                .status(400)
-                .json({ success: false, message: "Order total must be zero for free order" });
-
-        // ⭐ Generate download links for each cart item
-        const itemsWithDownloadLinks = [];
-        const downloadLinks = [];
-
-        for (const item of cart.items) {
-            const product = await Product.findById(item.productId);
-            if (!product) {
-                console.log(`❌ Product not found: ${item.productId}`);
-                continue;
-            }
-
-            // ✅ CORRECT VERSION BY INDEX (NOT name matching)
-            const versionIndex = item.selectedVersionIndex || 0;
-            const version = product.versions[versionIndex];
-
-            if (!version || !version.r2MusicFile) {
-                console.log(`❌ No r2MusicFile for ${product.title} version ${versionIndex}`);
-                continue;
-            }
-
-            // ⭐ Generate signed R2 download URL
-            const url = getSignedDownloadUrl(version.r2MusicFile);
-
-            // ⭐ Add to order items with download link
-            itemsWithDownloadLinks.push({
-                productId: item.productId,
-                title: item.title,
-                artist: item.artist,
-                price: item.price,
-                quantity: item.quantity,
-                version: version.name,        // ✅ Version name
-                versionIndex: versionIndex,   // ✅ Version index
-                image: item.image,
-                downloadLink: url             // ✅ Signed URL
-            });
-
-            // ⭐ Add to downloadLinks array for immediate response
-            downloadLinks.push({
-                title: `${product.title} - ${version.name}`,
-                artist: product.artist,
-                version: version.name,
-                url: url,
-                expiresIn: 10,  // minutes
-            });
         }
 
-        // ⭐ Check if we got any valid download links
+        console.log('🔍 RAW CART ITEMS:', JSON.stringify(cart.items, null, 2));
+
+        const itemsWithDownloadLinks = [];
+        const downloadLinks = [];
+        let validItemsCount = 0;
+
+        for (const item of cart.items) {
+            try {
+                // ✅ VALIDATE productId BEFORE findById
+                console.log(`🔍 Checking productId: ${item.productId}`);
+
+                const product = await Product.findById(item.productId);
+                if (!product) {
+                    console.log(`❌ Product not found: ${item.productId}`);
+                    continue; // Skip invalid product
+                }
+
+                console.log(`✅ Product found: ${product.title}`);
+
+                // ✅ SAFE version access
+                const versionIndex = Number(item.selectedVersionIndex) || 0;
+                let version = product.versions[versionIndex];
+
+                // Fallbacks
+                if (!version) version = product.versions[0];
+                if (!version?.r2MusicFile) {
+                    const firstWithFile = product.versions.find(v => v.r2MusicFile);
+                    if (firstWithFile) version = firstWithFile;
+                }
+
+                if (!version?.r2MusicFile) {
+                    console.log(`❌ No r2MusicFile for ${product.title}`);
+                    continue;
+                }
+
+                const url = getSignedDownloadUrl(version.r2MusicFile);
+
+                itemsWithDownloadLinks.push({
+                    productId: item.productId,
+                    title: item.title || product.title,
+                    artist: item.artist || product.artist,
+                    price: Number(item.price) || 0,
+                    quantity: Number(item.quantity) || 1,
+                    version: version.name,
+                    versionIndex: versionIndex,
+                    image: item.image,
+                    downloadLink: url
+                });
+
+                downloadLinks.push({
+                    title: `${product.title} - ${version.name}`,
+                    artist: product.artist,
+                    version: version.name,
+                    url,
+                });
+
+                validItemsCount++;
+                console.log(`✅ Valid item processed: ${validItemsCount}`);
+
+            } catch (itemError) {
+                console.error(`❌ Item processing error:`, itemError);
+                continue;
+            }
+        }
+
+        // ✅ CHECK IF ANY VALID ITEMS
         if (downloadLinks.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: "No valid products with download files found in cart"
+                message: `No valid products with download files found in cart (${validItemsCount} valid items)`,
+                invalidProductIds: cart.items.map(item => item.productId).filter((id, index, arr) => arr.indexOf(id) === index)
             });
         }
 
-        // ⭐ Save order with download links
+        // Save order
         const order = new Order({
             user: req.user.id,
             items: itemsWithDownloadLinks,
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
-            paymentDetails: {
-                method: "free",
-                email: user.email,
-                downloadLinksCount: downloadLinks.length
-            },
+            paymentDetails: { method: "free", email: user.email }
         });
         await order.save();
 
-        // ⭐ Clear cart
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // ⭐ Send response with download links
         res.json({
             success: true,
             message: `Free order placed! 🎉 ${downloadLinks.length} download link(s) ready.`,
             downloadLinks,
-            orderId: order._id,
-            totalItems: downloadLinks.length
+            orderId: order._id
         });
 
     } catch (err) {
         console.error("❌ Free order error:", err);
-        res.status(500).json({
-            success: false,
-            message: "Server error during free order processing",
-            error: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
+
 
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
