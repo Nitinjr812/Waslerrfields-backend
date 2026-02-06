@@ -397,6 +397,7 @@ function getSignedDownloadUrl(fileKey) {
     };
     return s3.getSignedUrl('getObject', params);
 }
+
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -421,15 +422,46 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         const downloadLinks = [];
 
         for (const item of cart.items) {
+            console.log('🔍 Processing cart item:', {
+                title: item.title,
+                version: item.version,
+                selectedVersionIndex: item.selectedVersionIndex
+            }); // 🔥 Debug log
+
             const product = await Product.findById(item.productId);
-            if (!product) continue;
+            if (!product) {
+                console.log('❌ Product not found:', item.productId);
+                continue;
+            }
 
-            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
-            if (!version || !version.r2MusicFile) continue;
+            // 🔥 FIX: Use selectedVersionIndex FIRST, then fallback to name match
+            let version;
 
-            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
+            // Priority 1: Use selectedVersionIndex if available
+            if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
+                version = product.versions[item.selectedVersionIndex];
+                console.log('✅ Using version by index:', item.selectedVersionIndex, version.name);
+            }
+            // Priority 2: Match by version name
+            else if (item.version) {
+                version = product.versions.find(v => v.name === item.version);
+                console.log('✅ Using version by name:', item.version);
+            }
+            // Priority 3: Fallback to first version
+            else {
+                version = product.versions[0];
+                console.log('⚠️ Using default first version');
+            }
+
+            if (!version || !version.r2MusicFile) {
+                console.log('❌ No valid version or file found');
+                continue;
+            }
+
+            console.log('📁 File to download:', version.r2MusicFile);
+
+            // ⭐ Use getSignedDownloadUrl
             const url = getSignedDownloadUrl(version.r2MusicFile);
-
 
             // ⭐ Add to itemsWithDownloadLinks
             itemsWithDownloadLinks.push({
@@ -438,23 +470,28 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 artist: item.artist,
                 price: item.price,
                 quantity: item.quantity,
-                version: item.version,
+                version: version.name,  // 🔥 Use actual version name
+                selectedVersionIndex: item.selectedVersionIndex,  // 🔥 Save index too
                 image: item.image,
-                downloadLink: url  // ⭐ Use 'url' variable here
+                downloadLink: url
             });
 
             // Add to downloadLinks array for response
             downloadLinks.push({
                 title: product.title,
                 artist: product.artist,
+                version: version.name,  // 🔥 Include version name in response
+                versionIndex: item.selectedVersionIndex,  // 🔥 Debug info
                 url,
             });
         }
 
+        console.log('📤 Download links generated:', downloadLinks.length);
+
         // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
-            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
+            items: itemsWithDownloadLinks,
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
@@ -475,7 +512,6 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
-
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -1353,20 +1389,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-                .populate('user', 'name email')  // User name + email populate
-                .sort({ createdAt: -1 })  // Latest first
-                .lean();
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
-            res.json({
-                success: true,
-                orders,
-                count: orders.length
-            });
-        } catch (err) {
-            console.error('Orders error:', err);
-            res.status(500).json({ success: false, message: err.message });
-        }
-    });
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1388,11 +1424,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-       
+
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-        
+
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
