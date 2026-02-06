@@ -132,7 +132,10 @@ const cartSchema = new mongoose.Schema({
         artist: { type: String, required: true },
         price: { type: Number, required: true },
         image: { type: String },
-        quantity: { type: Number, default: 1 }
+        quantity: { type: Number, default: 1 },
+        // 🔥 YEH DO FIELDS ADD KAR - BAHUT IMPORTANT!
+        version: { type: String, default: null },
+        selectedVersionIndex: { type: Number, default: null }
     }],
     updatedAt: { type: Date, default: Date.now }
 });
