@@ -507,6 +507,37 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
     }
 });
 
+// /api/cart/cleanup
+app.post('/api/cart/cleanup', protect, async (req, res) => {
+  try {
+    const cart = await Cart.findOne({ user: req.user.id });
+    if (!cart || !cart.items.length) {
+      return res.json({ success: true, cleaned: 0 });
+    }
+
+    // Filter valid products only
+    const validItems = [];
+    for (const item of cart.items) {
+      try {
+        const product = await Product.findById(item.productId);
+        if (product && item.productId.length === 24) {
+          validItems.push(item);
+        }
+      } catch (e) {
+        console.log('Removing invalid item:', item.productId);
+      }
+    }
+
+    await Cart.findOneAndUpdate({ user: req.user.id }, { items: validItems });
+    res.json({ 
+      success: true, 
+      cleaned: cart.items.length - validItems.length,
+      remaining: validItems.length 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
