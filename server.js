@@ -416,63 +416,94 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 .status(400)
                 .json({ success: false, message: "Order total must be zero for free order" });
 
-        // ⭐ PEHLE download links generate karo
+        // ⭐ Generate download links for each cart item
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
 
         for (const item of cart.items) {
             const product = await Product.findById(item.productId);
-            if (!product) continue;
+            if (!product) {
+                console.log(`❌ Product not found: ${item.productId}`);
+                continue;
+            }
 
-            const version = product.versions.find(v => v.name === item.version) || product.versions[0];
-            if (!version || !version.r2MusicFile) continue;
+            // ✅ CORRECT VERSION BY INDEX (NOT name matching)
+            const versionIndex = item.selectedVersionIndex || 0;
+            const version = product.versions[versionIndex];
 
-            // ⭐ Use getSignedDownloadUrl (not generateFileUrl)
+            if (!version || !version.r2MusicFile) {
+                console.log(`❌ No r2MusicFile for ${product.title} version ${versionIndex}`);
+                continue;
+            }
+
+            // ⭐ Generate signed R2 download URL
             const url = getSignedDownloadUrl(version.r2MusicFile);
 
-
-            // ⭐ Add to itemsWithDownloadLinks
+            // ⭐ Add to order items with download link
             itemsWithDownloadLinks.push({
                 productId: item.productId,
                 title: item.title,
                 artist: item.artist,
                 price: item.price,
                 quantity: item.quantity,
-                version: item.version,
+                version: version.name,        // ✅ Version name
+                versionIndex: versionIndex,   // ✅ Version index
                 image: item.image,
-                downloadLink: url  // ⭐ Use 'url' variable here
+                downloadLink: url             // ✅ Signed URL
             });
 
-            // Add to downloadLinks array for response
+            // ⭐ Add to downloadLinks array for immediate response
             downloadLinks.push({
-                title: product.title,
+                title: `${product.title} - ${version.name}`,
                 artist: product.artist,
-                url,
+                version: version.name,
+                url: url,
+                expiresIn: 10,  // minutes
             });
         }
 
-        // ⭐ AB order save karo with download links
+        // ⭐ Check if we got any valid download links
+        if (downloadLinks.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "No valid products with download files found in cart"
+            });
+        }
+
+        // ⭐ Save order with download links
         const order = new Order({
             user: req.user.id,
-            items: itemsWithDownloadLinks,  // ⭐ Only one 'items' property
+            items: itemsWithDownloadLinks,
             totalAmount: 0,
             paypalOrderId: "freeorder-" + Date.now(),
             status: "completed",
-            paymentDetails: { method: "free", email: user.email },
+            paymentDetails: {
+                method: "free",
+                email: user.email,
+                downloadLinksCount: downloadLinks.length
+            },
         });
         await order.save();
+
+        // ⭐ Clear cart
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // Send response
+        // ⭐ Send response with download links
         res.json({
             success: true,
-            message: "Free order placed!",
+            message: `Free order placed! 🎉 ${downloadLinks.length} download link(s) ready.`,
             downloadLinks,
             orderId: order._id,
+            totalItems: downloadLinks.length
         });
+
     } catch (err) {
-        console.error("Error in free order route:", err);
-        res.status(500).json({ success: false, message: err.message });
+        console.error("❌ Free order error:", err);
+        res.status(500).json({
+            success: false,
+            message: "Server error during free order processing",
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 });
 
@@ -1353,20 +1384,20 @@ app.get('/api/admin/orders', async (req, res) => {
             status: 'completed',
             totalAmount: { $gt: 0 }
         })
-                .populate('user', 'name email')  // User name + email populate
-                .sort({ createdAt: -1 })  // Latest first
-                .lean();
+            .populate('user', 'name email')  // User name + email populate
+            .sort({ createdAt: -1 })  // Latest first
+            .lean();
 
-            res.json({
-                success: true,
-                orders,
-                count: orders.length
-            });
-        } catch (err) {
-            console.error('Orders error:', err);
-            res.status(500).json({ success: false, message: err.message });
-        }
-    });
+        res.json({
+            success: true,
+            orders,
+            count: orders.length
+        });
+    } catch (err) {
+        console.error('Orders error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
 
 app.get('/api/admin/orders/completed', async (req, res) => {
     try {
@@ -1388,11 +1419,11 @@ app.get('/api/admin/orders/completed', async (req, res) => {
 // 🔥 DELETE ORDER ENDPOINT
 app.delete('/api/admin/orders/:id', async (req, res) => {
     try {
-       
+
 
         const { id } = req.params;
         const deletedOrder = await Order.findByIdAndDelete(id);
-        
+
         if (!deletedOrder) {
             return res.status(404).json({ success: false, message: 'Order not found' });
         }
