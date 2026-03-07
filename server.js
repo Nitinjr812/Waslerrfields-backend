@@ -530,11 +530,10 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         const extraAmount = Number(req.body.extraAmount || 0);
 
         const baseTotal = cart.items.reduce((sum, item) => {
-            const itemTotal = Number(item.price) * Number(item.quantity);
-            return sum + itemTotal;
+            return sum + (Number(item.price) * Number(item.quantity));
         }, 0);
 
-        const total = baseTotal + (extraAmount > 0 ? extraAmount : 0);
+        const total = parseFloat((baseTotal + (extraAmount > 0 ? extraAmount : 0)).toFixed(2));
 
         if (total <= 0) {
             return res.status(400).json({
@@ -551,7 +550,17 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                 {
                     amount: {
                         currency_code: 'USD',
-                        value: total.toFixed(2), // sirf yahi, breakdown hata diya
+                        value: total.toFixed(2),
+                        breakdown: {
+                            item_total: {
+                                currency_code: 'USD',
+                                value: baseTotal.toFixed(2),
+                            },
+                            handling: {
+                                currency_code: 'USD',
+                                value: extraAmount > 0 ? extraAmount.toFixed(2) : '0.00',
+                            },
+                        },
                     },
                     items: cart.items.map((item) => ({
                         name: `${item.title} by ${item.artist}`,
@@ -608,6 +617,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                 create_time: order.result.create_time,
             },
         });
+
     } catch (err) {
         console.error('PayPal order error:', {
             message: err.message,
