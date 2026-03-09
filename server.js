@@ -679,76 +679,75 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         // Clear user's cart
         await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // Get product versions to find r2MusicFile keys
+        // Get products
         const productIds = updatedOrder.items.map((item) => item.productId);
         const products = await Product.find({ _id: { $in: productIds } });
 
-        const downloadLinks = await Promise.all(
-            products.map(async (product, index) => {
-                const version = product.versions.find((v) => v.r2MusicFile);
+        console.log('🛒 Order items:', JSON.stringify(updatedOrder.items, null, 2));
+        console.log('📦 Products found:', products.length);
 
-                if (!version) {
-                    console.log(`No r2MusicFile found for "${product.title}"`);
-                    return null;
-                }
+        // ✅ FIXED: Same logic as free-order
+        const downloadLinks = [];
 
-                const fileKey = version.r2MusicFile;
-                const workerUrl = `https://music-buckets.ck806180.workers.dev/generate-link?file=${encodeURIComponent(fileKey)}`;
+        for (const item of updatedOrder.items) {
+            const product = products.find(p => p._id.toString() === item.productId.toString());
 
-                console.log(`🔗 Song #${index + 1}: "${product.title}"`);
-                console.log(`🎯 fileKey: ${fileKey}`);
-                console.log(`🌐 Worker Link: ${workerUrl}`);
-                console.log(`🔑 API-Key Being Used: ${process.env.CLOUDFLARE_API_SECRET}`);
+            if (!product) {
+                console.log('❌ Product not found for item:', item.productId);
+                continue;
+            }
 
-                try {
-                    const workerRes = await fetch(workerUrl, {
-                        headers: {
-                            'API-Key': process.env.CLOUDFLARE_API_SECRET
-                        }
-                    });
+            // Same version matching logic as free-order
+            let version;
 
-                    const text = await workerRes.text();
+            if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
+                version = product.versions[item.selectedVersionIndex];
+                console.log('✅ Version by index:', item.selectedVersionIndex, version.name);
+            } else if (item.version) {
+                version = product.versions.find(v => v.name === item.version);
+                console.log('✅ Version by name:', item.version);
+            } else {
+                version = product.versions[0];
+                console.log('⚠️ Fallback to first version');
+            }
 
-                    if (!workerRes.ok) {
-                        console.log(`❌ Worker failed for ${fileKey}:`, workerRes.status, text);
-                        return null;
-                    }
+            if (!version || !version.r2MusicFile) {
+                console.log('❌ No valid version or r2MusicFile for:', product.title);
+                continue;
+            }
 
-                    const { url } = JSON.parse(text);
+            console.log('📁 Generating signed URL for:', version.r2MusicFile);
 
-                    console.log(`✅ Success! File link generated: ${url}`);
+            const url = getSignedDownloadUrl(version.r2MusicFile);
 
-                    return {
-                        title: product.title,
-                        artist: product.artist,
-                        url
-                    };
-                } catch (err) {
-                    console.log(`❌ Exception talking to Cloudflare Worker for fileKey: ${fileKey}`, err);
-                    return null;
-                }
-            })
-        );
+            downloadLinks.push({
+                title: product.title,
+                artist: product.artist,
+                version: version.name,
+                url
+            });
 
-        // Filter valid links only
-        const validLinks = downloadLinks.filter(Boolean);
+            console.log('✅ Download link added for:', product.title);
+        }
 
-        // Send cute email with download links
+        console.log('📤 Total download links:', downloadLinks.length);
+
+        // Send email with download links
         const emailHtml = `
-      <div style="font-family: Arial; max-width: 600px; margin: auto;">
-        <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
-        <p>Here are your download links:</p>
-        ${validLinks.map(link => `
-          <div style="margin: 10px 0;">
-            <strong>${link.title} by ${link.artist}</strong> <br/>
-            <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
-              text-decoration: none;" href="${link.url}" target="_blank">Download</a>
-          </div>
-        `).join('')}
-        <p><small>Links expire in 10 minutes.</small></p>
-        <p>Stay awesome,<br/>Waslerr Team</p>
-      </div>
-    `;
+            <div style="font-family: Arial; max-width: 600px; margin: auto;">
+                <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
+                <p>Here are your download links:</p>
+                ${downloadLinks.map(link => `
+                    <div style="margin: 10px 0;">
+                        <strong>${link.title} by ${link.artist}</strong><br/>
+                        <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
+                            text-decoration: none;" href="${link.url}" target="_blank">Download</a>
+                    </div>
+                `).join('')}
+                <p><small>Links expire in 10 minutes.</small></p>
+                <p>Stay awesome,<br/>Waslerr Team</p>
+            </div>
+        `;
 
         await sendEmail(
             updatedOrder.user.email,
@@ -761,14 +760,15 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             message: 'Payment captured and download link sent!',
             order: updatedOrder,
             capture: capture.result,
-            downloadLinks: validLinks
+            downloadLinks
         });
+
     } catch (err) {
         console.error('❗ Payment capture error:', err);
 
-        if (orderID) {
+        if (req.body.orderID) {
             await Order.findOneAndUpdate(
-                { paypalOrderId: orderID, user: req.user.id },
+                { paypalOrderId: req.body.orderID, user: req.user.id },
                 { status: 'failed' }
             );
         }
@@ -781,7 +781,6 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         });
     }
 });
-
 
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
@@ -1076,30 +1075,52 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
             }
         }
 
-        // Validate versions array and each version object
+        console.log('📦 Parsed versions before validation:', JSON.stringify(parsedVersions, null, 2));
 
+        // ✅ FIXED: price 0 bhi valid hai, trim r2MusicFile
         for (const v of parsedVersions) {
-            if (!v.name || v.price === undefined || !v.r2MusicFile) {
+            const price = Number(v.price);
+            const r2File = v.r2MusicFile?.trim();
+
+            if (!v.name?.trim()) {
                 return res.status(400).json({
                     success: false,
-                    error: 'Each version must have a name, price, and r2MusicFile'
+                    error: `Version name is required`
+                });
+            }
+            if (isNaN(price) || v.price === '' || v.price === null || v.price === undefined) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Version "${v.name}" price is invalid`
+                });
+            }
+            if (!r2File) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Version "${v.name}" r2MusicFile is required`
                 });
             }
         }
 
-        // Convert price to number for each version
+        // ✅ Clean + convert price to number, trim r2MusicFile
         parsedVersions = parsedVersions.map(v => ({
-            ...v,
-            price: Number(v.price)
+            name: v.name.trim(),
+            price: Number(v.price),
+            r2MusicFile: v.r2MusicFile.trim(),
+            features: Array.isArray(v.features)
+                ? v.features.filter(f => f?.trim())
+                : []
         }));
 
-        // Process uploaded images for URLs and public IDs
+        console.log('✅ Final cleaned versions:', JSON.stringify(parsedVersions, null, 2));
+
+        // Process uploaded images
         const images = req.files.map(file => ({
             url: file.path,
             publicId: file.filename
         }));
 
-        // Create new Product document
+        // Create product
         const product = new Product({
             title,
             description,
@@ -1112,7 +1133,8 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
 
         await product.save();
 
-        console.log('Product created successfully:', product._id);
+        console.log('✅ Product created successfully:', product._id);
+        console.log('✅ Versions saved:', JSON.stringify(product.versions, null, 2));
 
         res.status(201).json({
             success: true,
@@ -1124,7 +1146,6 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
         console.error('=== CREATE PRODUCT ERROR ===');
         console.error('Error:', err);
 
-        // Clean up uploaded files on error
         if (req.files && req.files.length > 0) {
             for (const file of req.files) {
                 try {
@@ -1142,8 +1163,6 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
         });
     }
 });
-
-
 // Get All Products (Public)
 app.get('/api/products', async (req, res) => {
     try {
