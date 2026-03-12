@@ -666,9 +666,9 @@ async function getPayPalAccessToken() {
     }
 
     const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-    const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
+    const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
 
-    const credentials = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString('base64');
+    const credentials = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
 
     const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
         // For sandbox: 'https://api-m.sandbox.paypal.com/v1/oauth2/token'
