@@ -515,6 +515,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+// ✅ FIXED: create-paypal-order route
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -542,9 +543,10 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer('return=representation');
-        request.requestBody({
+        // ✅ FIX 1: Use PayPal REST API v2 directly instead of old SDK - much faster & reliable
+        const accessToken = await getPayPalAccessToken(); // helper function below
+
+        const orderPayload = {
             intent: 'CAPTURE',
             purchase_units: [
                 {
@@ -563,13 +565,13 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                         },
                     },
                     items: cart.items.map((item) => ({
-                        name: `${item.title} by ${item.artist}`,
+                        name: `${item.title} by ${item.artist}`.substring(0, 127), // PayPal max 127 chars
                         unit_amount: {
                             currency_code: 'USD',
                             value: Number(item.price).toFixed(2),
                         },
                         quantity: item.quantity.toString(),
-                        sku: item.productId,
+                        sku: item.productId.toString().substring(0, 127),
                     })),
                 },
             ],
@@ -580,68 +582,116 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                 cancel_url: `${req.headers.origin}/cart`,
                 shipping_preference: 'NO_SHIPPING',
             },
-        });
+        };
 
-        console.log('Creating PayPal order with request:', JSON.stringify(request.body, null, 2));
-        const order = await client().execute(request);
-        console.log('PayPal order response:', JSON.stringify(order, null, 2));
+        // ✅ FIX 2: Direct REST API call with timeout - no old SDK wrapper
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
-        const approveLink = order.result.links.find((link) => link.rel === 'approve');
+        let paypalResponse;
+        try {
+            const response = await fetch('https://api-m.paypal.com/v2/checkout/orders', {
+                // For sandbox: 'https://api-m.sandbox.paypal.com/v2/checkout/orders'
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`,
+                    'PayPal-Request-Id': `waslerr-${req.user.id}-${Date.now()}`, // idempotency key
+                },
+                body: JSON.stringify(orderPayload),
+                signal: controller.signal,
+            });
+            paypalResponse = await response.json();
+        } finally {
+            clearTimeout(timeout);
+        }
+
+        if (!paypalResponse.id) {
+            console.error('PayPal API Error:', paypalResponse);
+            return res.status(400).json({
+                success: false,
+                message: 'PayPal order creation failed',
+                paypalError: paypalResponse,
+            });
+        }
+
+        const approveLink = paypalResponse.links?.find((link) => link.rel === 'payer-action' || link.rel === 'approve');
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
+        // ✅ FIX 3: Save order to DB
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
             totalAmount: total,
             baseAmount: baseTotal,
             extraAmount: extraAmount,
-            paypalOrderId: order.result.id,
+            paypalOrderId: paypalResponse.id,
             status: 'pending',
             paymentDetails: {
-                create_time: order.result.create_time,
-                links: order.result.links,
+                create_time: paypalResponse.create_time,
+                links: paypalResponse.links,
             },
         });
 
         await dbOrder.save();
 
-        res.json({
+        // ✅ FIX 4: Return fast - frontend ko bas orderID chahiye
+        return res.json({
             success: true,
-            orderID: order.result.id,
+            orderID: paypalResponse.id,
             approvalUrl: approveLink.href,
-            paypalResponse: {
-                id: order.result.id,
-                status: order.result.status,
-                create_time: order.result.create_time,
-            },
         });
 
     } catch (err) {
-        console.error('PayPal order error:', {
-            message: err.message,
-            stack: err.stack,
-            response: err.response || null,
-        });
+        console.error('PayPal order error:', err.message);
 
-        const errorResponse = {
+        return res.status(500).json({
             success: false,
             error: 'Failed to create PayPal order',
             message: err.message,
-        };
-
-        if (err.response) {
-            errorResponse.paypalError = {
-                status: err.response.statusCode,
-                details: err.response.result,
-            };
-        }
-
-        res.status(500).json(errorResponse);
+        });
     }
 });
 
+// ✅ Helper: Get PayPal Access Token (cache karna chahiye production mein)
+let cachedToken = null;
+let tokenExpiry = null;
+
+async function getPayPalAccessToken() {
+    // Return cached token if still valid (PayPal tokens last ~9 hours)
+    if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
+        return cachedToken;
+    }
+
+    const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+    const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
+
+    const credentials = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString('base64');
+
+    const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+        // For sandbox: 'https://api-m.sandbox.paypal.com/v1/oauth2/token'
+        method: 'POST',
+        headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'grant_type=client_credentials',
+    });
+
+    const data = await response.json();
+
+    if (!data.access_token) {
+        throw new Error('Failed to get PayPal access token');
+    }
+
+    // Cache token for 8 hours
+    cachedToken = data.access_token;
+    tokenExpiry = Date.now() + (8 * 60 * 60 * 1000);
+
+    return cachedToken;
+}
 // Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
