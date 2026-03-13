@@ -21,7 +21,6 @@
   "author": "Nitin",
   "license": "MIT",
   "dependencies": {
-    "@paypal/checkout-server-sdk": "^1.0.3",
     "aws-sdk": "^2.1692.0",
     "axios": "^1.10.0",
     "bcryptjs": "^2.4.3",
@@ -38,7 +37,6 @@
     "mongoose": "^7.8.7",
     "multer": "^2.0.1",
     "multer-storage-cloudinary": "^4.0.0",
-    "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.4",
     "postman": "^0.2.0",
     "validator": "^13.11.0"

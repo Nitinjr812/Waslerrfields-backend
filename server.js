@@ -8,8 +8,7 @@ const jwt = require('jsonwebtoken');
 const { check, validationResult } = require('express-validator');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const fetch = require('node-fetch');
+const { CloudinaryStorage } = require('multer-storage-cloudinary'); 
 const s3 = require('./config/r2');
 const { generateFileUrl } = require('./utils/fileUrlGenerator');
 
@@ -388,8 +387,7 @@ app.post('/api/coupons/validate', protect, async (req, res) => {
     }
 });
 // Payment Routes
-const { client } = require('./config/paypal');
-const paypal = require('@paypal/checkout-server-sdk');
+const { client } = require('./config/paypal'); 
 const { sendEmail } = require('./config/nodemailer');
 
 function getSignedDownloadUrl(fileKey) {

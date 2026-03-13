@@ -1,42 +1,37 @@
-// config/paypal.js
-const checkoutNodeJssdk = require('@paypal/checkout-server-sdk');
+// config/paypal.js - Updated (no old SDK needed)
 
-function client() {
-  return new checkoutNodeJssdk.core.PayPalHttpClient(environment());
-}
+let cachedToken = null;
+let tokenExpiry = null;
 
-function environment() {
-  const clientId = process.env.PAYPAL_CLIENT_ID;
-  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
-
-  if (process.env.PAYPAL_ENVIRONMENT === 'production') {
-    return new checkoutNodeJssdk.core.LiveEnvironment(clientId, clientSecret);
-  } else {  
-    return new checkoutNodeJssdk.core.SandboxEnvironment(clientId, clientSecret);
-  }
-}
-
-async function prettyPrint(jsonData, pre = "") {
-  let pretty = "";
-  function capitalize(string) {
-    return string.charAt(0).toUpperCase() + string.slice(1).toLowerCase();
-  }
-  for (let key in jsonData) {
-    if (jsonData.hasOwnProperty(key)) {
-      if (isNaN(key)) {
-        pretty += pre + capitalize(key) + ": ";
-      } else {
-        pretty += pre + (parseInt(key) + 1) + ": ";
-      }
-      if (typeof jsonData[key] === "object") {
-        pretty += "\n";
-        pretty += await prettyPrint(jsonData[key], pre + "    ");
-      } else {
-        pretty += jsonData[key] + "\n";
-      }
+async function getPayPalAccessToken() {
+    if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
+        return cachedToken;
     }
-  }
-  return pretty;
+
+    const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+    const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+
+    const credentials = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+
+    const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'grant_type=client_credentials',
+    });
+
+    const data = await response.json();
+
+    if (!data.access_token) {
+        throw new Error('Failed to get PayPal access token');
+    }
+
+    cachedToken = data.access_token;
+    tokenExpiry = Date.now() + (8 * 60 * 60 * 1000);
+
+    return cachedToken;
 }
 
-module.exports = { client, prettyPrint };
+module.exports = { getPayPalAccessToken };
