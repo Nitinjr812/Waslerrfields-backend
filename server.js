@@ -8,10 +8,9 @@ const jwt = require('jsonwebtoken');
 const { check, validationResult } = require('express-validator');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
-const { CloudinaryStorage } = require('multer-storage-cloudinary'); 
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const s3 = require('./config/r2');
-const { generateFileUrl } = require('./utils/fileUrlGenerator');
-
+const { generateFileUrl } = require('./utils/fileUrlGenerator'); 
 // Initialize app
 const app = express();
 
@@ -386,8 +385,7 @@ app.post('/api/coupons/validate', protect, async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error validating coupon', error: error.message });
     }
 });
-// Payment Routes
-const { client } = require('./config/paypal'); 
+// Payment Routes 
 const { sendEmail } = require('./config/nodemailer');
 
 function getSignedDownloadUrl(fileKey) {
@@ -693,6 +691,7 @@ async function getPayPalAccessToken() {
 // Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
+        const { client, prettyPrint } = require('./config/paypal')
         const { orderID } = req.body;
 
         if (!orderID) {
@@ -702,17 +701,43 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // Capture PayPal payment
-        const request = new paypal.orders.OrdersCaptureRequest(orderID);
-        request.requestBody({});
-        const capture = await client().execute(request);
+        // ✅ Direct REST API v2 se capture
+        const accessToken = await getPayPalAccessToken();
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+
+        let captureData;
+        try {
+            const response = await fetch(`https://api-m.paypal.com/v2/checkout/orders/${orderID}/capture`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`,
+                },
+                body: JSON.stringify({}),
+                signal: controller.signal,
+            });
+            captureData = await response.json();
+        } finally {
+            clearTimeout(timeout);
+        }
+
+        if (captureData.status !== 'COMPLETED') {
+            console.error('PayPal capture failed:', captureData);
+            return res.status(400).json({
+                success: false,
+                message: 'Payment capture failed',
+                paypalError: captureData,
+            });
+        }
 
         // Update order in DB
         const updatedOrder = await Order.findOneAndUpdate(
             { paypalOrderId: orderID, user: req.user.id },
             {
                 status: 'completed',
-                paymentDetails: capture.result
+                paymentDetails: captureData
             },
             { new: true }
         ).populate('user', 'name email');
@@ -731,56 +756,33 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
         const productIds = updatedOrder.items.map((item) => item.productId);
         const products = await Product.find({ _id: { $in: productIds } });
 
-        console.log('🛒 Order items:', JSON.stringify(updatedOrder.items, null, 2));
-        console.log('📦 Products found:', products.length);
-
-        // ✅ FIXED: Same logic as free-order
         const downloadLinks = [];
 
         for (const item of updatedOrder.items) {
             const product = products.find(p => p._id.toString() === item.productId.toString());
+            if (!product) continue;
 
-            if (!product) {
-                console.log('❌ Product not found for item:', item.productId);
-                continue;
-            }
-
-            // Same version matching logic as free-order
             let version;
-
             if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
                 version = product.versions[item.selectedVersionIndex];
-                console.log('✅ Version by index:', item.selectedVersionIndex, version.name);
             } else if (item.version) {
                 version = product.versions.find(v => v.name === item.version);
-                console.log('✅ Version by name:', item.version);
             } else {
                 version = product.versions[0];
-                console.log('⚠️ Fallback to first version');
             }
 
-            if (!version || !version.r2MusicFile) {
-                console.log('❌ No valid version or r2MusicFile for:', product.title);
-                continue;
-            }
-
-            console.log('📁 Generating signed URL for:', version.r2MusicFile);
+            if (!version || !version.r2MusicFile) continue;
 
             const url = getSignedDownloadUrl(version.r2MusicFile);
-
             downloadLinks.push({
                 title: product.title,
                 artist: product.artist,
                 version: version.name,
                 url
             });
-
-            console.log('✅ Download link added for:', product.title);
         }
 
-        console.log('📤 Total download links:', downloadLinks.length);
-
-        // Send email with download links
+        // Send email
         const emailHtml = `
             <div style="font-family: Arial; max-width: 600px; margin: auto;">
                 <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
@@ -807,7 +809,7 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             success: true,
             message: 'Payment captured and download link sent!',
             order: updatedOrder,
-            capture: capture.result,
+            capture: captureData,
             downloadLinks
         });
 
@@ -825,7 +827,6 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             success: false,
             error: 'Failed to complete order',
             message: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
         });
     }
 });
