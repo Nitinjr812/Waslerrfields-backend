@@ -10,7 +10,7 @@ const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const s3 = require('./config/r2');
-const { generateFileUrl } = require('./utils/fileUrlGenerator'); 
+const { generateFileUrl } = require('./utils/fileUrlGenerator');
 // Initialize app
 const app = express();
 
@@ -691,7 +691,6 @@ async function getPayPalAccessToken() {
 // Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
-        const { client, prettyPrint } = require('./config/paypal')
         const { orderID } = req.body;
 
         if (!orderID) {
@@ -782,32 +781,9 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
             });
         }
 
-        // Send email
-        const emailHtml = `
-            <div style="font-family: Arial; max-width: 600px; margin: auto;">
-                <h2>🎉 Thanks for your purchase, ${updatedOrder.user.name}!</h2>
-                <p>Here are your download links:</p>
-                ${downloadLinks.map(link => `
-                    <div style="margin: 10px 0;">
-                        <strong>${link.title} by ${link.artist}</strong><br/>
-                        <a style="color: white; background: #e53935; padding: 8px 12px; border-radius: 4px; 
-                            text-decoration: none;" href="${link.url}" target="_blank">Download</a>
-                    </div>
-                `).join('')}
-                <p><small>Links expire in 10 minutes.</small></p>
-                <p>Stay awesome,<br/>Waslerr Team</p>
-            </div>
-        `;
-
-        await sendEmail(
-            updatedOrder.user.email,
-            `Your Waslerr Order #${updatedOrder._id}`,
-            emailHtml
-        );
-
         res.json({
             success: true,
-            message: 'Payment captured and download link sent!',
+            message: 'Payment captured successfully!',
             order: updatedOrder,
             capture: captureData,
             downloadLinks
