@@ -810,20 +810,36 @@ app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
 // Get User Orders
 app.get('/api/orders', protect, async (req, res) => {
     try {
-        const orders = await Order.find({ user: req.user.id })
-            .sort({ createdAt: -1 });
+        const orders = await Order.find({ user: req.user.id }).sort({ createdAt: -1 });
+        const productIds = orders.flatMap(o => o.items.map(i => i.productId));
+        const products = await Product.find({ _id: { $in: productIds } });
 
-        res.json({
-            success: true,
-            orders
-        });
+        const ordersWithLinks = orders.map(order => ({
+            ...order.toObject(),
+            items: order.items.map(item => {
+                const product = products.find(p => p._id.toString() === item.productId.toString());
+                if (!product) return item;
+
+                let version;
+                if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
+                    version = product.versions[item.selectedVersionIndex];
+                } else if (item.version) {
+                    version = product.versions.find(v => v.name === item.version);
+                } else {
+                    version = product.versions[0];
+                }
+
+                return {
+                    ...item,
+                    downloadLink: version?.r2MusicFile ? getSignedDownloadUrl(version.r2MusicFile) : null
+                };
+            })
+        }));
+
+        res.json({ success: true, orders: ordersWithLinks });
     } catch (err) {
         console.error('Get orders error:', err);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to get orders',
-            message: err.message
-        });
+        res.status(500).json({ success: false, error: 'Failed to get orders', message: err.message });
     }
 });
 
