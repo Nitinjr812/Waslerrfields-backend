@@ -141,12 +141,19 @@ const cartSchema = new mongoose.Schema({
 const Cart = mongoose.model('Cart', cartSchema);
 // coupoun model
 const couponSchema = new mongoose.Schema({
-    code: { type: String, required: true, unique: true },
+    code: { type: String, required: true, unique: true, uppercase: true },
     discountPercentage: { type: Number, required: true },
-    validFrom: { type: Date, default: Date.now },
-    validUntil: { type: Date },
+    discountType: {
+        type: String,
+        enum: ['percent', 'amount'],
+        default: 'percent'
+    },
+    validFrom: { type: Date, default: null },
+    validUntil: { type: Date, default: null },
+    maxUses: { type: Number, default: null },
+    usedCount: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
-});
+}, { timestamps: true });
 
 const Coupon = mongoose.model('Coupon', couponSchema);
 // Order Model
@@ -396,7 +403,6 @@ function getSignedDownloadUrl(fileKey) {
     };
     return s3.getSignedUrl('getObject', params);
 }
-
 app.post('/api/payment/free-order', protect, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
@@ -407,16 +413,21 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         if (!cart || cart.items.length === 0)
             return res.status(400).json({ success: false, message: "Cart is empty" });
 
-        const total = cart.items.reduce(
+        // ✅ FIXED: cart.total use karo (coupon ke baad ka amount)
+        const rawTotal = cart.items.reduce(
             (sum, item) => sum + Number(item.price) * Number(item.quantity),
             0
         );
-        if (total !== 0)
-            return res
-                .status(400)
-                .json({ success: false, message: "Order total must be zero for free order" });
+        const finalTotal = (cart.total !== undefined && cart.total !== null)
+            ? cart.total
+            : rawTotal;
 
-        // ⭐ PEHLE download links generate karo
+        if (finalTotal !== 0)
+            return res.status(400).json({
+                success: false,
+                message: "Order total must be zero for free order"
+            });
+
         const itemsWithDownloadLinks = [];
         const downloadLinks = [];
 
@@ -425,7 +436,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 title: item.title,
                 version: item.version,
                 selectedVersionIndex: item.selectedVersionIndex
-            }); // 🔥 Debug log
+            });
 
             const product = await Product.findById(item.productId);
             if (!product) {
@@ -433,21 +444,14 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 continue;
             }
 
-            // 🔥 FIX: Use selectedVersionIndex FIRST, then fallback to name match
             let version;
-
-            // Priority 1: Use selectedVersionIndex if available
             if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
                 version = product.versions[item.selectedVersionIndex];
                 console.log('✅ Using version by index:', item.selectedVersionIndex, version.name);
-            }
-            // Priority 2: Match by version name
-            else if (item.version) {
+            } else if (item.version) {
                 version = product.versions.find(v => v.name === item.version);
                 console.log('✅ Using version by name:', item.version);
-            }
-            // Priority 3: Fallback to first version
-            else {
+            } else {
                 version = product.versions[0];
                 console.log('⚠️ Using default first version');
             }
@@ -457,37 +461,31 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
                 continue;
             }
 
-            console.log('📁 File to download:', version.r2MusicFile);
-
-            // ⭐ Use getSignedDownloadUrl
             const url = getSignedDownloadUrl(version.r2MusicFile);
 
-            // ⭐ Add to itemsWithDownloadLinks
             itemsWithDownloadLinks.push({
                 productId: item.productId,
                 title: item.title,
                 artist: item.artist,
                 price: item.price,
                 quantity: item.quantity,
-                version: version.name,  // 🔥 Use actual version name
-                selectedVersionIndex: item.selectedVersionIndex,  // 🔥 Save index too
+                version: version.name,
+                selectedVersionIndex: item.selectedVersionIndex,
                 image: item.image,
                 downloadLink: url
             });
 
-            // Add to downloadLinks array for response
             downloadLinks.push({
                 title: product.title,
                 artist: product.artist,
-                version: version.name,  // 🔥 Include version name in response
-                versionIndex: item.selectedVersionIndex,  // 🔥 Debug info
+                version: version.name,
+                versionIndex: item.selectedVersionIndex,
                 url,
             });
         }
 
         console.log('📤 Download links generated:', downloadLinks.length);
 
-        // ⭐ AB order save karo with download links
         const order = new Order({
             user: req.user.id,
             items: itemsWithDownloadLinks,
@@ -497,9 +495,15 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
             paymentDetails: { method: "free", email: user.email },
         });
         await order.save();
-        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [] });
 
-        // Send response
+        // ✅ NEW: Coupon usedCount increment karo
+        if (cart.coupon) {
+            await Coupon.findByIdAndUpdate(cart.coupon, { $inc: { usedCount: 1 } });
+            console.log('✅ Coupon usage incremented');
+        }
+
+        await Cart.findOneAndUpdate({ user: req.user.id }, { items: [], total: null, coupon: null, discount: 0 });
+
         res.json({
             success: true,
             message: "Free order placed!",
@@ -511,6 +515,7 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+
 // ✅ FIXED: create-paypal-order route
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
@@ -526,21 +531,28 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
         const extraAmount = Number(req.body.extraAmount || 0);
 
+        // ✅ FIXED: pehle raw total nikalo
         const baseTotal = cart.items.reduce((sum, item) => {
             return sum + (Number(item.price) * Number(item.quantity));
         }, 0);
 
-        const total = parseFloat((baseTotal + (extraAmount > 0 ? extraAmount : 0)).toFixed(2));
+        // ✅ FIXED: cart.total use karo agar coupon laga hai
+        const discountedBase = (cart.total !== undefined && cart.total !== null && cart.total < baseTotal)
+            ? cart.total
+            : baseTotal;
 
+        const total = parseFloat((discountedBase + (extraAmount > 0 ? extraAmount : 0)).toFixed(2));
+
+        // ✅ FIXED: agar total 0 hai toh free-order route use karo
         if (total <= 0) {
             return res.status(400).json({
                 success: false,
-                message: 'Invalid order total',
+                message: 'Total is 0 — use free-order route',
+                isFree: true,
             });
         }
 
-        // ✅ FIX 1: Use PayPal REST API v2 directly instead of old SDK - much faster & reliable
-        const accessToken = await getPayPalAccessToken(); // helper function below
+        const accessToken = await getPayPalAccessToken();
 
         const orderPayload = {
             intent: 'CAPTURE',
@@ -552,7 +564,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                         breakdown: {
                             item_total: {
                                 currency_code: 'USD',
-                                value: baseTotal.toFixed(2),
+                                value: discountedBase.toFixed(2),  // ✅ FIXED: discounted amount
                             },
                             handling: {
                                 currency_code: 'USD',
@@ -561,7 +573,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                         },
                     },
                     items: cart.items.map((item) => ({
-                        name: `${item.title} by ${item.artist}`.substring(0, 127), // PayPal max 127 chars
+                        name: `${item.title} by ${item.artist}`.substring(0, 127),
                         unit_amount: {
                             currency_code: 'USD',
                             value: Number(item.price).toFixed(2),
@@ -580,19 +592,17 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             },
         };
 
-        // ✅ FIX 2: Direct REST API call with timeout - no old SDK wrapper
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+        const timeout = setTimeout(() => controller.abort(), 15000);
 
         let paypalResponse;
         try {
             const response = await fetch('https://api-m.paypal.com/v2/checkout/orders', {
-                // For sandbox: 'https://api-m.sandbox.paypal.com/v2/checkout/orders'
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${accessToken}`,
-                    'PayPal-Request-Id': `waslerr-${req.user.id}-${Date.now()}`, // idempotency key
+                    'PayPal-Request-Id': `waslerr-${req.user.id}-${Date.now()}`,
                 },
                 body: JSON.stringify(orderPayload),
                 signal: controller.signal,
@@ -611,17 +621,19 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             });
         }
 
-        const approveLink = paypalResponse.links?.find((link) => link.rel === 'payer-action' || link.rel === 'approve');
+        const approveLink = paypalResponse.links?.find(
+            (link) => link.rel === 'payer-action' || link.rel === 'approve'
+        );
         if (!approveLink) {
             throw new Error('No approval URL found in PayPal response');
         }
 
-        // ✅ FIX 3: Save order to DB
         const dbOrder = new Order({
             user: req.user.id,
             items: cart.items,
             totalAmount: total,
             baseAmount: baseTotal,
+            discountedAmount: discountedBase,  // ✅ NEW: save karo
             extraAmount: extraAmount,
             paypalOrderId: paypalResponse.id,
             status: 'pending',
@@ -633,7 +645,6 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
         await dbOrder.save();
 
-        // ✅ FIX 4: Return fast - frontend ko bas orderID chahiye
         return res.json({
             success: true,
             orderID: paypalResponse.id,
@@ -642,7 +653,6 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
     } catch (err) {
         console.error('PayPal order error:', err.message);
-
         return res.status(500).json({
             success: false,
             error: 'Failed to create PayPal order',
@@ -650,44 +660,6 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         });
     }
 });
-
-// ✅ Helper: Get PayPal Access Token (cache karna chahiye production mein)
-let cachedToken = null;
-let tokenExpiry = null;
-
-async function getPayPalAccessToken() {
-    // Return cached token if still valid (PayPal tokens last ~9 hours)
-    if (cachedToken && tokenExpiry && Date.now() < tokenExpiry) {
-        return cachedToken;
-    }
-
-    const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-    const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-
-    const credentials = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-
-    const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
-        // For sandbox: 'https://api-m.sandbox.paypal.com/v1/oauth2/token'
-        method: 'POST',
-        headers: {
-            'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: 'grant_type=client_credentials',
-    });
-
-    const data = await response.json();
-
-    if (!data.access_token) {
-        throw new Error('Failed to get PayPal access token');
-    }
-
-    // Cache token for 8 hours
-    cachedToken = data.access_token;
-    tokenExpiry = Date.now() + (8 * 60 * 60 * 1000);
-
-    return cachedToken;
-}
 // Capture PayPal Order
 app.post('/api/payment/capture-paypal-order', protect, async (req, res) => {
     try {
@@ -874,27 +846,33 @@ app.get('/api/orders/:id', protect, async (req, res) => {
 
 app.post('/api/admin/coupons', protect, async (req, res) => {
     try {
+        const { code, discountPercentage, discountType, validFrom, validUntil, maxUses, isActive } = req.body;
 
-        const { code, discountPercentage, validFrom, validUntil, isActive } = req.body;
-
-        if (!code || !discountPercentage) {
+        if (!code || discountPercentage === undefined) {
             return res.status(400).json({ success: false, message: 'Code and discount required' });
         }
 
-        const existing = await Coupon.findOne({ code });
+        const existing = await Coupon.findOne({ code: code.toUpperCase() });
         if (existing) {
             return res.status(400).json({ success: false, message: 'Coupon code already exists' });
         }
 
-        const coupon = new Coupon({ code, discountPercentage, validFrom, validUntil, isActive });
-        await coupon.save();
+        const coupon = new Coupon({
+            code: code.toUpperCase(),
+            discountPercentage: Number(discountPercentage),
+            discountType: discountType || 'percent',   // ✅
+            validFrom: validFrom || null,
+            validUntil: validUntil || null,
+            maxUses: maxUses || null,
+            isActive: isActive ?? true,
+        });
 
+        await coupon.save();
         res.status(201).json({ success: true, message: 'Coupon created', coupon });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error creating coupon', error: error.message });
     }
 });
-
 
 app.put('/api/cart', protect, async (req, res) => {
     try {
@@ -904,43 +882,70 @@ app.put('/api/cart', protect, async (req, res) => {
             return res.status(400).json({ error: 'Items must be an array' });
         }
 
-        let discount = 0;
+        const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+        let discountAmount = 0;
         let appliedCoupon = null;
+
         if (couponCode) {
-            const coupon = await Coupon.findOne({ code: couponCode, isActive: true });
-            const now = new Date();
+            const coupon = await Coupon.findOne({
+                code: couponCode.toUpperCase(),   // ✅ uppercase match
+                isActive: true
+            });
+
             if (!coupon) {
                 return res.status(400).json({ error: 'Invalid coupon code' });
             }
-            if ((coupon.validFrom && coupon.validFrom > now) || (coupon.validUntil && coupon.validUntil < now)) {
-                return res.status(400).json({ error: 'Coupon not valid at this time' });
+
+            const now = new Date();
+
+            // ✅ Yeh check pehle ulta tha, ab sahi hai
+            if (coupon.validUntil && new Date(coupon.validUntil) < now) {
+                return res.status(400).json({ error: 'Coupon has expired' });
             }
-            discount = coupon.discountPercentage;
+            if (coupon.validFrom && new Date(coupon.validFrom) > now) {
+                return res.status(400).json({ error: 'Coupon is not active yet' });
+            }
+
+            // ✅ maxUses check
+            if (coupon.maxUses !== null && coupon.usedCount >= coupon.maxUses) {
+                return res.status(400).json({ error: 'Coupon usage limit reached' });
+            }
+
+            // ✅ percent ya fixed amount dono handle
+            if (coupon.discountType === 'amount') {
+                discountAmount = coupon.discountPercentage; // yahan value = fixed Rs/$ amount
+            } else {
+                discountAmount = total * (coupon.discountPercentage / 100);
+            }
+
             appliedCoupon = coupon;
         }
 
-        // Calculate total with discount
-        const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-        const discountedTotal = total - (total * discount / 100);
+        const discountedTotal = Math.max(0, total - discountAmount); // ✅ kabhi negative nahi hoga
 
-        // Save cart and coupon info to DB (example, adjust based on your Cart model)
         let cart = await Cart.findOne({ user: req.user.id });
-        if (!cart) {
-            cart = new Cart({ user: req.user.id });
-        }
+        if (!cart) cart = new Cart({ user: req.user.id });
+
         cart.items = items;
         cart.coupon = appliedCoupon ? appliedCoupon._id : null;
-        cart.discount = discount;
+        cart.discount = discountAmount;
         cart.total = discountedTotal;
 
         await cart.save();
 
-        res.json({ success: true, cart });
+        res.json({
+            success: true,
+            cart,
+            originalTotal: total,
+            discountAmount,
+            finalTotal: discountedTotal,
+            isFree: discountedTotal === 0   // ✅ frontend ko pata chalega free hai
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
-
 
 // Also improve the GET cart route
 app.get('/api/cart', protect, async (req, res) => {
