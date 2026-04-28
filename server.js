@@ -358,14 +358,16 @@ app.put('/api/cart', protect, async (req, res) => {
 
 app.post('/api/coupons/validate', protect, async (req, res) => {
     try {
-        const { code } = req.body;
+        const { code, totalAmount } = req.body; // ✅ totalAmount bhi lo
 
         if (!code) {
             return res.status(400).json({ success: false, message: 'Coupon code is required' });
         }
 
-        // Find active coupon by code
-        const coupon = await Coupon.findOne({ code, isActive: true });
+        const coupon = await Coupon.findOne({
+            code: code.toUpperCase(), // ✅ uppercase match
+            isActive: true
+        });
 
         if (!coupon) {
             return res.status(400).json({ success: false, message: 'Invalid coupon code' });
@@ -373,25 +375,43 @@ app.post('/api/coupons/validate', protect, async (req, res) => {
 
         const now = new Date();
 
-        if (coupon.validFrom && coupon.validFrom > now) {
+        if (coupon.validFrom && new Date(coupon.validFrom) > now) {
             return res.status(400).json({ success: false, message: 'Coupon not valid yet' });
         }
 
-        if (coupon.validUntil && coupon.validUntil < now) {
+        if (coupon.validUntil && new Date(coupon.validUntil) < now) {
             return res.status(400).json({ success: false, message: 'Coupon has expired' });
         }
 
-        // Return discount details
+        if (coupon.maxUses !== null && coupon.usedCount >= coupon.maxUses) {
+            return res.status(400).json({ success: false, message: 'Coupon usage limit reached' });
+        }
+
+        // ✅ discountType ke hisaab se actual amount calculate karo
+        const total = Number(totalAmount) || 0;
+        let discountAmount = 0;
+
+        if (coupon.discountType === 'amount') {
+            discountAmount = coupon.discountPercentage; // fixed Rs/$ value
+        } else {
+            // percent — total bheja toh calculate karo, nahi toh sirf % return karo
+            discountAmount = total > 0
+                ? parseFloat((total * coupon.discountPercentage / 100).toFixed(2))
+                : coupon.discountPercentage; // fallback
+        }
+
         res.json({
             success: true,
             discountPercentage: coupon.discountPercentage,
-            discountAmount: coupon.discountPercentage,  // frontend can calculate with total
+            discountType: coupon.discountType || 'percent', // ✅
+            discountAmount,  // ✅ sahi amount
             message: 'Coupon applied successfully',
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error validating coupon', error: error.message });
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
     }
 });
+
 // Payment Routes 
 const { sendEmail } = require('./config/nodemailer');
 
