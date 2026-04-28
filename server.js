@@ -789,21 +789,36 @@ app.get('/api/orders', protect, async (req, res) => {
         const ordersWithLinks = orders.map(order => ({
             ...order.toObject(),
             items: order.items.map(item => {
-                const product = products.find(p => p._id.toString() === item.productId.toString());
-                if (!product) return item;
+                const itemObj = item.toObject ? item.toObject() : item; // ✅ FIX 1
+
+                const product = products.find(p => p._id.toString() === itemObj.productId?.toString());
+
+                // ✅ FIX 2: product se image lo agar item mein nahi hai
+                const productImage = product?.images?.[0]?.url || null;
+                const itemImage = itemObj.image || productImage;
+
+                if (!product) return {
+                    ...itemObj,
+                    image: itemImage,
+                    price: Number(itemObj.price) || 0, // ✅ FIX 3
+                };
 
                 let version;
-                if (typeof item.selectedVersionIndex === 'number' && product.versions[item.selectedVersionIndex]) {
-                    version = product.versions[item.selectedVersionIndex];
-                } else if (item.version) {
-                    version = product.versions.find(v => v.name === item.version);
+                if (typeof itemObj.selectedVersionIndex === 'number' && product.versions[itemObj.selectedVersionIndex]) {
+                    version = product.versions[itemObj.selectedVersionIndex];
+                } else if (itemObj.version) {
+                    version = product.versions.find(v => v.name === itemObj.version);
                 } else {
                     version = product.versions[0];
                 }
 
                 return {
-                    ...item,
-                    downloadLink: version?.r2MusicFile ? getSignedDownloadUrl(version.r2MusicFile) : null
+                    ...itemObj,
+                    image: itemImage,                                              // ✅ image fix
+                    price: Number(itemObj.price) || 0,                            // ✅ price NaN fix
+                    downloadLink: version?.r2MusicFile
+                        ? getSignedDownloadUrl(version.r2MusicFile)
+                        : null
                 };
             })
         }));
