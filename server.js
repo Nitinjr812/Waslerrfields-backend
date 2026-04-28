@@ -535,7 +535,33 @@ app.post('/api/payment/free-order', protect, async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 });
+const getPayPalAccessToken = async () => {
+    const clientId = process.env.PAYPAL_CLIENT_ID;
+    const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
 
+    if (!clientId || !clientSecret) {
+        throw new Error('PayPal credentials missing in environment variables');
+    }
+
+    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+    const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'grant_type=client_credentials',
+    });
+
+    const data = await response.json();
+
+    if (!data.access_token) {
+        throw new Error('Failed to get PayPal access token: ' + JSON.stringify(data));
+    }
+
+    return data.access_token;
+};
 // ✅ FIXED: create-paypal-order route
 app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
     try {
@@ -551,19 +577,16 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
 
         const extraAmount = Number(req.body.extraAmount || 0);
 
-        // ✅ FIXED: pehle raw total nikalo
         const baseTotal = cart.items.reduce((sum, item) => {
             return sum + (Number(item.price) * Number(item.quantity));
         }, 0);
 
-        // ✅ FIXED: cart.total use karo agar coupon laga hai
         const discountedBase = (cart.total !== undefined && cart.total !== null && cart.total < baseTotal)
             ? cart.total
             : baseTotal;
 
         const total = parseFloat((discountedBase + (extraAmount > 0 ? extraAmount : 0)).toFixed(2));
 
-        // ✅ FIXED: agar total 0 hai toh free-order route use karo
         if (total <= 0) {
             return res.status(400).json({
                 success: false,
@@ -573,6 +596,9 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
         }
 
         const accessToken = await getPayPalAccessToken();
+
+        // ✅ discount ratio for proportional item prices
+        const discountRatio = baseTotal > 0 ? discountedBase / baseTotal : 1;
 
         const orderPayload = {
             intent: 'CAPTURE',
@@ -584,7 +610,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                         breakdown: {
                             item_total: {
                                 currency_code: 'USD',
-                                value: discountedBase.toFixed(2),  // ✅ FIXED: discounted amount
+                                value: discountedBase.toFixed(2),
                             },
                             handling: {
                                 currency_code: 'USD',
@@ -592,11 +618,12 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
                             },
                         },
                     },
+                    // ✅ proportional prices taaki item_total se match ho
                     items: cart.items.map((item) => ({
                         name: `${item.title} by ${item.artist}`.substring(0, 127),
                         unit_amount: {
                             currency_code: 'USD',
-                            value: Number(item.price).toFixed(2),
+                            value: (Number(item.price) * discountRatio).toFixed(2),
                         },
                         quantity: item.quantity.toString(),
                         sku: item.productId.toString().substring(0, 127),
@@ -653,7 +680,7 @@ app.post('/api/payment/create-paypal-order', protect, async (req, res) => {
             items: cart.items,
             totalAmount: total,
             baseAmount: baseTotal,
-            discountedAmount: discountedBase,  // ✅ NEW: save karo
+            discountedAmount: discountedBase,
             extraAmount: extraAmount,
             paypalOrderId: paypalResponse.id,
             status: 'pending',
