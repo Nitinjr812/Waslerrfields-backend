@@ -193,7 +193,7 @@ const productSchema = new mongoose.Schema({
         publicId: { type: String, required: true }
     }],
     artist: { type: String, required: true },
-    category: { type: String, default: 'general' },
+    category: { type: String, default: 'akashik' },
     isActive: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
@@ -935,7 +935,31 @@ app.post('/api/admin/coupons', protect, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error creating coupon', error: error.message });
     }
 });
+app.get('/api/admin/coupons', protect, async (req, res) => {
+    try {
+        const coupons = await Coupon.find().sort({ createdAt: -1 });
+        res.json({ success: true, coupons });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error fetching coupons', error: error.message });
+    }
+});
+app.put('/api/admin/coupons/:id', protect, async (req, res) => {
+    try {
+        const { code, discountPercentage, discountType, validUntil, maxUses, isActive } = req.body;
 
+        const coupon = await Coupon.findByIdAndUpdate(
+            req.params.id,
+            { code, discountPercentage, discountType, validUntil: validUntil || null, maxUses: maxUses || null, isActive },
+            { new: true }
+        );
+
+        if (!coupon) return res.status(404).json({ success: false, message: 'Coupon not found' });
+
+        res.json({ success: true, message: 'Coupon updated', coupon });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error updating coupon', error: error.message });
+    }
+});
 app.put('/api/cart', protect, async (req, res) => {
     try {
         const { items, couponCode } = req.body;
@@ -1235,7 +1259,7 @@ app.post('/api/products', protect, upload.array('images', 5), async (req, res) =
             versions: parsedVersions,
             images,
             artist,
-            category: category || 'general',
+            category: category,
             createdBy: req.user.id
         });
 
