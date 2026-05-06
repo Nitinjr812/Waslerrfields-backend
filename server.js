@@ -78,17 +78,14 @@ app.use((req, res, next) => {
     next();
 });
 
-
-const mongoose = require('mongoose');
-
+ 
 const adminConfigSchema = new mongoose.Schema({
     key: { type: String, unique: true },
     value: String,
 });
 
 module.exports = mongoose.model('AdminConfig', adminConfigSchema);
-
-// Enhanced CORS headers middleware - MUST be before routes
+ 
 app.use((req, res, next) => {
     const origin = req.headers.origin;
     res.header('Access-Control-Allow-Origin', origin || '*');
