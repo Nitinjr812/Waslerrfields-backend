@@ -78,6 +78,16 @@ app.use((req, res, next) => {
     next();
 });
 
+
+const mongoose = require('mongoose');
+
+const adminConfigSchema = new mongoose.Schema({
+    key: { type: String, unique: true },
+    value: String,
+});
+
+module.exports = mongoose.model('AdminConfig', adminConfigSchema);
+
 // Enhanced CORS headers middleware - MUST be before routes
 app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -1706,6 +1716,52 @@ app.post('/api/admin/change-password', (req, res) => {
 
     process.env.ADMIN_PASSWORD = newPassword;
     return res.status(200).json({ success: true, message: 'Password changed successfully' });
+});
+const AdminConfig = require('./models/AdminConfig');
+
+// Helper — DB se password lo, fallback env pe
+const getAdminPassword = async () => {
+  const config = await AdminConfig.findOne({ key: 'adminPassword' });
+  return config ? config.value : process.env.ADMIN_PASSWORD;
+};
+
+app.post('/api/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password)
+    return res.status(400).json({ success: false, message: 'All fields required' });
+
+  const adminPassword = await getAdminPassword();
+
+  if (username === process.env.ADMIN_USERNAME && password === adminPassword) {
+    return res.json({ success: true, message: 'Login successful' });
+  }
+  return res.status(401).json({ success: false, message: 'Invalid credentials!' });
+});
+
+app.post('/api/admin/change-password', async (req, res) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body;
+
+  if (!currentPassword || !newPassword || !confirmPassword)
+    return res.status(400).json({ success: false, message: 'All fields required' });
+
+  const adminPassword = await getAdminPassword();
+
+  if (currentPassword !== adminPassword)
+    return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+
+  if (newPassword !== confirmPassword)
+    return res.status(400).json({ success: false, message: 'Passwords do not match' });
+
+  if (newPassword.length < 6)
+    return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+
+  await AdminConfig.findOneAndUpdate(
+    { key: 'adminPassword' },
+    { value: newPassword },
+    { upsert: true }
+  );
+
+  return res.json({ success: true, message: 'Password changed successfully' });
 });
 
 const PORT = process.env.PORT || 5000;
