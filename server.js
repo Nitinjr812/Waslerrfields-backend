@@ -1669,86 +1669,45 @@ app.use('*', (req, res) => {
         message: `Route ${req.originalUrl} not found`
     });
 });
-// routes/adminAuth.js
-const express = require('express');
-const router = express.Router();
-const fs = require('fs');
-const path = require('path');
+// Sirf yeh do routes apne server.js mein paste karo existing code ke baad
+app.post('/api/admin/login', (req, res) => {
+    const { username, password } = req.body;
 
-// Simple file-based credential store (replace with DB if needed)
-const CREDS_FILE = path.join(__dirname, '../config/adminCreds.json');
-
-// Helper: read credentials
-const readCreds = () => {
-    if (!fs.existsSync(CREDS_FILE)) {
-        // Default credentials on first run
-        const defaultCreds = { username: 'Waslerr', password: 'Rexed72385' };
-        fs.mkdirSync(path.dirname(CREDS_FILE), { recursive: true });
-        fs.writeFileSync(CREDS_FILE, JSON.stringify(defaultCreds, null, 2));
-        return defaultCreds;
+    if (!username || !password) {
+        return res.status(400).json({ success: false, message: 'Username and password required' });
     }
-    return JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
-};
 
-// Helper: write credentials
-const writeCreds = (creds) => {
-    fs.writeFileSync(CREDS_FILE, JSON.stringify(creds, null, 2));
-};
-
-// POST /api/admin/login
-router.post('/login', (req, res) => {
-    try {
-        const { username, password } = req.body;
-
-        if (!username || !password) {
-            return res.status(400).json({ success: false, message: 'Username and password required' });
-        }
-
-        const creds = readCreds();
-
-        if (username === creds.username && password === creds.password) {
-            return res.status(200).json({ success: true, message: 'Login successful' });
-        }
-
-        return res.status(401).json({ success: false, message: 'Invalid credentials!' });
-    } catch (err) {
-        console.error('Login error:', err);
-        return res.status(500).json({ success: false, message: 'Server error' });
+    if (username === process.env.ADMIN_USERNAME &&
+        password === process.env.ADMIN_PASSWORD) {
+        return res.status(200).json({ success: true, message: 'Login successful' });
     }
+
+    return res.status(401).json({ success: false, message: 'Invalid credentials!' });
 });
 
-router.post('/change-password', (req, res) => {
-    try {
-        const { currentPassword, newPassword, confirmPassword } = req.body;
+app.post('/api/admin/change-password', (req, res) => {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
 
-        if (!currentPassword || !newPassword || !confirmPassword) {
-            return res.status(400).json({ success: false, message: 'All fields are required' });
-        }
-
-        if (newPassword !== confirmPassword) {
-            return res.status(400).json({ success: false, message: 'New passwords do not match' });
-        }
-
-        if (newPassword.length < 6) {
-            return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
-        }
-
-        const creds = readCreds();
-
-        if (currentPassword !== creds.password) {
-            return res.status(401).json({ success: false, message: 'Current password is incorrect' });
-        }
-
-        writeCreds({ ...creds, password: newPassword });
-        return res.status(200).json({ success: true, message: 'Password changed successfully' });
-    } catch (err) {
-        console.error('Change password error:', err);
-        return res.status(500).json({ success: false, message: 'Server error' });
+    if (!currentPassword || !newPassword || !confirmPassword) {
+        return res.status(400).json({ success: false, message: 'All fields are required' });
     }
+
+    if (currentPassword !== process.env.ADMIN_PASSWORD) {
+        return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+    }
+
+    if (newPassword !== confirmPassword) {
+        return res.status(400).json({ success: false, message: 'Passwords do not match' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+
+    process.env.ADMIN_PASSWORD = newPassword;
+    return res.status(200).json({ success: true, message: 'Password changed successfully' });
 });
 
-module.exports = router;
-// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
