@@ -1635,6 +1635,8 @@ app.use((err, req, res, next) => {
         message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
 });
+const adminRoutes = require('./routes/admin');
+app.use('/api/admin', adminRoutes);
 app.get('/api/orders/:productId/reaccess', protect, async (req, res) => {
     const { productId } = req.params;
 
