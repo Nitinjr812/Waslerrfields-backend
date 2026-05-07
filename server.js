@@ -1303,9 +1303,9 @@ app.get('/api/products', async (req, res) => {
         const query = { isActive: true };
 
         if (category && category !== 'all') {
-            query.category = category;
+            const cats = category.split(',');
+            query.category = cats.length > 1 ? { $in: cats } : cats[0];
         }
-
         if (search) {
             query.$or = [
                 { title: { $regex: search, $options: 'i' } },
